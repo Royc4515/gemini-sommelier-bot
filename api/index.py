@@ -61,6 +61,13 @@ def application(environ, start_response):
     chat_id = message["chat"]["id"]
     allowed_user_id = os.environ.get("ALLOWED_USER_ID", "")
     if allowed_user_id and str(chat_id) != allowed_user_id:
+        try:
+            TelegramClient().send_message(
+                chat_id=chat_id,
+                text="שלום! הבוט הזה פרטי ומיועד לשימוש אישי בלבד. לחיים 🍷",
+            )
+        except Exception:
+            pass
         return _respond("200 OK", "OK — unauthorized user")
 
     # --- Execute flow ---
