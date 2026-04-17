@@ -6,6 +6,7 @@ system instructions for the Wine Sommelier persona.
 """
 
 import os
+import time
 
 from google import genai
 from google.genai import types
@@ -53,6 +54,7 @@ class SommelierAI:
     def ask(self, user_message: str, inventory_context: str) -> str:
         """Send a single user turn together with the current inventory context.
 
+        Retries up to 3 times with exponential backoff on transient errors.
         Returns the model's text response.
         """
         contents = (
@@ -60,12 +62,26 @@ class SommelierAI:
             f"השאלה שלי:\n{user_message}"
         )
 
-        response = self.client.models.generate_content(
-            model=self.MODEL_NAME,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-            ),
-        )
+        max_retries = 3
+        last_error = None
 
-        return response.text or "לא הצלחתי לייצר תשובה. נסה שוב."
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.MODEL_NAME,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_INSTRUCTION,
+                    ),
+                )
+                return response.text or "לא הצלחתי לייצר תשובה. נסה שוב."
+            except Exception as exc:
+                last_error = exc
+                # Only retry on transient / overload errors
+                err_str = str(exc).lower()
+                if "503" in err_str or "unavailable" in err_str or "overloaded" in err_str:
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                    continue
+                raise  # Non-transient error — fail immediately
+
+        raise last_error  # All retries exhausted
