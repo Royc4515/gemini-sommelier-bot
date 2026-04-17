@@ -71,7 +71,8 @@ class SommelierAI:
                 # Only retry on transient / overload errors
                 err_str = str(exc).lower()
                 if "503" in err_str or "unavailable" in err_str or "overloaded" in err_str:
-                    time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # 1s, 2s
                     continue
                 raise  # Non-transient error — fail immediately
 

@@ -62,6 +62,13 @@ class TestParseInventory(unittest.TestCase):
         names = [r["שם היין"].strip() for r in rows]
         self.assertNotIn("", names)
 
+    def test_missing_expected_column_handled_gracefully(self):
+        # CSV without the 'סטטוס חדש' column
+        corrupted_csv = "יקב,שם היין,בציר\nפלם,Classico,2021\n"
+        rows = self.inventory.parse_inventory(corrupted_csv)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["שם היין"], "Classico")
+
     def test_empty_csv_returns_empty_list(self):
         rows = self.inventory.parse_inventory("יקב,שם היין\n")
         self.assertEqual(rows, [])
@@ -107,6 +114,22 @@ class TestGetFormattedInventory(unittest.TestCase):
         self.assertIn("1.", result)
         self.assertIn("2.", result)
 
+
+class TestFetchInventory(unittest.TestCase):
+    """WineInventory.fetch_inventory — network operations."""
+    
+    def setUp(self):
+        os.environ["WINE_CSV_URL"] = "https://fake-url/wines.csv"
+        self.inventory = WineInventory()
+
+    @patch("urllib.request.urlopen")
+    def test_fetch_timeout_raises_error(self, mock_urlopen):
+        import urllib.error
+        # Mock a timeout error
+        mock_urlopen.side_effect = urllib.error.URLError("timeout")
+        
+        with self.assertRaises(urllib.error.URLError):
+            self.inventory.fetch_inventory()
 
 if __name__ == "__main__":
     unittest.main()
