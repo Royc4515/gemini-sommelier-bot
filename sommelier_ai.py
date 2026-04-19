@@ -54,13 +54,16 @@ class SommelierAI:
     (summarize) used by the memory layer.
     """
 
-    MODEL_NAME = "gemini-1.5-flash"
+    MODEL_NAME = "gemini-2.0-flash"
     _MAX_RETRIES = 3
     _RETRY_STATUSES = ("503", "unavailable", "overloaded")
 
     def __init__(self):
         api_key: str = os.environ["GEMINI_API_KEY"]
-        self.client = genai.Client(api_key=api_key)
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options={'api_version': 'v1'}
+        )
 
     # ------------------------------------------------------------------
     # Public: conversation
