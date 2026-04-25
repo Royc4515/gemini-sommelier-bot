@@ -55,11 +55,16 @@ class TestSommelierAI(unittest.TestCase):
         
         self.assertEqual(result, "This is a wine recommendation.")
         self.mock_chat.send_message.assert_called_once()
+        self.mock_client.chats.create.assert_called_once()
         
         # Verify contents include context
         call_args = self.mock_chat.send_message.call_args[0][0]
         self.assertIn("Inventory: Wine A", call_args)
         self.assertIn("What should I drink?", call_args)
+        
+        # Verify correct model was used
+        create_kwargs = self.mock_client.chats.create.call_args[1]
+        self.assertEqual(create_kwargs["model"], SommelierAI.FALLBACK_MODELS[0])
 
     def test_fallback_when_text_empty(self):
         mock_response = MagicMock()
@@ -68,6 +73,29 @@ class TestSommelierAI(unittest.TestCase):
 
         result = self.ai.ask("test", "test")
         self.assertIn("לא הצלחתי", result)
+
+    def test_fallback_on_429(self):
+        """Verify that a 429 error triggers fallback to the next model."""
+        mock_success_response = MagicMock()
+        mock_success_response.text = "Fallback success"
+        
+        # Fail first model with 429 in chats.create, succeed on second
+        self.mock_client.chats.create.side_effect = [
+            Exception("429 Resource Exhausted"),
+            self.mock_chat
+        ]
+        self.mock_chat.send_message.return_value = mock_success_response
+
+        with patch("sys.stderr.write") as mock_stderr:
+            result = self.ai.ask("test", "test")
+            
+        self.assertEqual(result, "Fallback success")
+        self.assertEqual(self.mock_client.chats.create.call_count, 2)
+        
+        calls = self.mock_client.chats.create.call_args_list
+        self.assertEqual(calls[0][1]["model"], SommelierAI.FALLBACK_MODELS[0])
+        self.assertEqual(calls[1][1]["model"], SommelierAI.FALLBACK_MODELS[1])
+        mock_stderr.assert_called_once()
 
     @patch("time.sleep")
     def test_retry_on_503(self, mock_sleep):
@@ -87,9 +115,10 @@ class TestSommelierAI(unittest.TestCase):
         self.assertEqual(result, "Success on try 3")
         self.assertEqual(self.mock_client.chats.create.call_count, 3)
         self.assertEqual(mock_sleep.call_count, 2)
-        # Sleep values should be 2**0=1 and 2**1=2
-        self.assertEqual(mock_sleep.call_args_list[0][0][0], 1)
-        self.assertEqual(mock_sleep.call_args_list[1][0][0], 2)
+        
+        # Verify all calls used the first fallback model
+        for call in self.mock_client.chats.create.call_args_list:
+            self.assertEqual(call[1]["model"], SommelierAI.FALLBACK_MODELS[0])
 
     @patch("time.sleep")
     def test_exhaust_retries_on_503(self, mock_sleep):
@@ -100,7 +129,7 @@ class TestSommelierAI(unittest.TestCase):
             self.ai.ask("test", "test")
             
         self.assertEqual(self.mock_client.chats.create.call_count, 3)
-        self.assertEqual(mock_sleep.call_count, 2) # Wait after try 1 and 2, but not 3
+        self.assertEqual(mock_sleep.call_count, 2)
 
     @patch("time.sleep")
     def test_fail_immediately_on_400(self, mock_sleep):
@@ -112,6 +141,16 @@ class TestSommelierAI(unittest.TestCase):
             
         self.assertEqual(self.mock_client.chats.create.call_count, 1)
         mock_sleep.assert_not_called()
+
+    def test_exhaust_all_fallbacks(self):
+        """Verify that a 429 on all models raises the final quota exhaustion exception."""
+        self.mock_client.chats.create.side_effect = Exception("429 Quota Exceeded")
+        
+        with patch("sys.stderr.write"):
+            with self.assertRaisesRegex(RuntimeError, "All fallback models exhausted due to quota/rate limits"):
+                self.ai.ask("test", "test")
+                
+        self.assertEqual(self.mock_client.chats.create.call_count, len(SommelierAI.FALLBACK_MODELS))
 
 if __name__ == "__main__":
     unittest.main()

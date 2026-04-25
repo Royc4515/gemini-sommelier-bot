@@ -6,6 +6,7 @@ system instructions for the Wine Sommelier persona.
 """
 
 import os
+import sys
 import time
 
 from google import genai
@@ -54,7 +55,12 @@ class SommelierAI:
     (summarize) used by the memory layer.
     """
 
-    MODEL_NAME = "gemini-2.0-flash"
+    FALLBACK_MODELS = (
+        "gemini-3.1-flash-lite",
+        "gemma-4-31b",
+        "gemini-3-flash",
+        "gemini-2.5-flash"
+    )
     _MAX_RETRIES = 3
     _RETRY_STATUSES = ("503", "unavailable", "overloaded")
 
@@ -95,7 +101,7 @@ class SommelierAI:
         )
 
         return self._call_with_retry(
-            lambda: self._chat_send(system_instruction, gemini_history, current_message)
+            lambda model_name: self._chat_send(model_name, system_instruction, gemini_history, current_message)
         )
 
     # ------------------------------------------------------------------
@@ -106,7 +112,7 @@ class SommelierAI:
         """Single-turn summarization call."""
         contents = f"{prompt}{text}"
         return self._call_with_retry(
-            lambda: self._single_generate(contents)
+            lambda model_name: self._single_generate(model_name, contents)
         )
 
     # ------------------------------------------------------------------
@@ -115,13 +121,14 @@ class SommelierAI:
 
     def _chat_send(
         self,
+        model_name: str,
         system_instruction: str,
         history: list,
         message: str,
     ) -> str:
         """Create a chat session with history and send one message."""
         chat = self.client.chats.create(
-            model=self.MODEL_NAME,
+            model=model_name,
             history=history,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -130,10 +137,10 @@ class SommelierAI:
         response = chat.send_message(message)
         return response.text or "לא הצלחתי לייצר תשובה. נסה שוב."
 
-    def _single_generate(self, contents: str) -> str:
+    def _single_generate(self, model_name: str, contents: str) -> str:
         """Single-turn generate_content call (for summarization)."""
         response = self.client.models.generate_content(
-            model=self.MODEL_NAME,
+            model=model_name,
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=_SUMMARIZER_SYSTEM,
@@ -142,17 +149,23 @@ class SommelierAI:
         return response.text or ""
 
     def _call_with_retry(self, fn) -> str:
-        """Execute *fn()* with exponential backoff on transient errors."""
+        """Execute *fn(model_name)* with exponential backoff on transient errors."""
         last_error = None
-        for attempt in range(self._MAX_RETRIES):
-            try:
-                return fn()
-            except Exception as exc:
-                last_error = exc
-                err_str = str(exc).lower()
-                is_transient = any(s in err_str for s in self._RETRY_STATUSES)
-                if is_transient and attempt < self._MAX_RETRIES - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise
-        raise last_error
+        for model_name in self.FALLBACK_MODELS:
+            for attempt in range(self._MAX_RETRIES):
+                try:
+                    return fn(model_name)
+                except Exception as exc:
+                    last_error = exc
+                    err_str = str(exc).lower()
+                    
+                    if "429" in err_str or "quota exceeded" in err_str or "resource exhausted" in err_str:
+                        sys.stderr.write(f"WARNING: Model {model_name} exhausted quota. Falling back to next model.\n")
+                        break  # Break inner loop, next model
+
+                    is_transient = any(s in err_str for s in self._RETRY_STATUSES)
+                    if is_transient and attempt < self._MAX_RETRIES - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise
+        raise RuntimeError("All fallback models exhausted due to quota/rate limits.") from last_error
