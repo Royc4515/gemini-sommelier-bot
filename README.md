@@ -2,6 +2,9 @@
 
 > *"A professional sommelier in your pocket, speaking your language, and intimately familiar with your personal wine cellar."*
 
+💬 **צריכים עזרה עם הבוט? / Need help?**
+תרגישו חופשי לפתוח אישיו ב-**[GitHub](https://github.com/Royc4515)** או לשלוח הודעה ב-**[LinkedIn](https://www.linkedin.com/in/roy-carmelli/)**.
+
 **Gemini Wine Sommelier** is a serverless Telegram bot powered by the Google Gemini API. It acts as a personal, expert Israeli Sommelier (בגובה העיניים) that perfectly pairs food with your *actual* wine inventory, managed live via Google Sheets.
 
 Whether you're looking to open a top-tier Flam or Castel, pairing a heavy Syrah with a steak, or just doing some cellar management, the bot understands your specific taste profile (Kosher dry wines, Mediterranean varietals) and recommends exactly what to pour next.
@@ -10,17 +13,12 @@ Whether you're looking to open a top-tier Flam or Castel, pairing a heavy Syrah 
 
 ## 📸 Screenshots
 
-<!-- 
-ROY: Please take these two screenshots, name them accordingly, and place them in an "assets" folder in the repository! 
-Once you add them, they will automatically render here.
--->
-
 ### The Sommelier in Action
-*(Take a screenshot on your phone or desktop Telegram of a cool interaction with the bot, like asking for a pairing for a Friday night dinner).*
+*(הסומלייה שלנו בפעולה - מרכיב התאמות יין מדויקות בגובה העיניים)*
 ![Chat Interaction](assets/chat-example.jpg)
 
 ### The Cellar (Google Sheets)
-*(Take a screenshot of your Google Sheet showing the columns like Wine Name, Winery, Vintage, and Status).*
+*(המלאי האישי שלך מנוהל ישירות מגוגל שיטס - תמיד מסונכרן ומעודכן)*
 ![Sheets Inventory](assets/sheets-inventory.png)
 
 ---
@@ -76,9 +74,9 @@ python -m unittest discover tests/
 
 ---
 
-## 💬 Need Help?
+## 💬 Need Help? / צריכים עזרה?
 
-Building your own AI Sommelier can be tricky! If you need any help setting up your Google Sheets, configuring the Vercel deployment, or tweaking the Gemini persona, feel free to reach out. 
+להרים סומלייה וירטואלי משלכם זה לא תמיד פשוט! אם אתם מסתבכים עם החיבור לגוגל שיטס, ההגדרות ב-Vercel, או סתם רוצים לשפר את סגנון הדיבור של הבוט – אני כאן.
 
 You can open an issue here on **[GitHub](https://github.com/Royc4515)** or connect with me on **[LinkedIn](https://www.linkedin.com/in/roy-carmelli/)**.
 
