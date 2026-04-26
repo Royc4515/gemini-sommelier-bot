@@ -1,5 +1,10 @@
 # 🍷 Gemini Wine Sommelier
 
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)](https://python.org)
+[![Gemini API](https://img.shields.io/badge/Gemini_API-Enabled-orange?logo=google)](https://ai.google.dev/)
+[![Telegram Bot](https://img.shields.io/badge/Telegram_Bot-Active-blue?logo=telegram)](https://core.telegram.org/bots)
+[![Vercel](https://img.shields.io/badge/Vercel-Serverless-black?logo=vercel)](https://vercel.com)
+
 > *"A professional sommelier in your pocket, intimately familiar with your personal wine cellar."*
 
 💬 **Need Help Setting This Up?**
