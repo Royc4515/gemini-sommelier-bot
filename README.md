@@ -1,24 +1,24 @@
 # 🍷 Gemini Wine Sommelier
 
-> *"A professional sommelier in your pocket, speaking your language, and intimately familiar with your personal wine cellar."*
+> *"A professional sommelier in your pocket, intimately familiar with your personal wine cellar."*
 
-💬 **צריכים עזרה עם הבוט? / Need help?**
-תרגישו חופשי לפתוח אישיו ב-**[GitHub](https://github.com/Royc4515)** או לשלוח הודעה ב-**[LinkedIn](https://www.linkedin.com/in/roy-carmelli/)**.
+💬 **Need Help Setting This Up?**
+Feel free to open an issue on **[GitHub](https://github.com/Royc4515)** or connect with me on **[LinkedIn](https://www.linkedin.com/in/roy-carmelli/)**.
 
-**Gemini Wine Sommelier** is a serverless Telegram bot powered by the Google Gemini API. It acts as a personal, expert Israeli Sommelier (בגובה העיניים) that perfectly pairs food with your *actual* wine inventory, managed live via Google Sheets.
+**Gemini Wine Sommelier** is a serverless Telegram bot powered by the Google Gemini API. It acts as a personal, expert Sommelier that perfectly pairs food with your *actual* wine inventory, managed live via Google Sheets.
 
-Whether you're looking to open a top-tier Flam or Castel, pairing a heavy Syrah with a steak, or just doing some cellar management, the bot understands your specific taste profile (Kosher dry wines, Mediterranean varietals) and recommends exactly what to pour next.
+Whether you're looking to open a top-tier Bordeaux, pair a heavy Syrah with a steak, or just do some cellar management, the bot can be completely customized to understand your specific taste profile, dietary restrictions, and preferred language to recommend exactly what to pour next.
 
 ---
 
 ## 📸 Screenshots
 
 ### The Sommelier in Action
-*(הסומלייה שלנו בפעולה - מרכיב התאמות יין מדויקות בגובה העיניים)*
+*(The bot providing a perfect pairing recommendation based on your active inventory)*
 ![Chat Interaction](assets/chat-example.jpg)
 
 ### The Cellar (Google Sheets)
-*(המלאי האישי שלך מנוהל ישירות מגוגל שיטס - תמיד מסונכרן ומעודכן)*
+*(Your personal cellar managed directly from Google Sheets — always synced and up-to-date)*
 ![Sheets Inventory](assets/sheets-inventory.png)
 
 ---
@@ -27,7 +27,7 @@ Whether you're looking to open a top-tier Flam or Castel, pairing a heavy Syrah 
 
 - **🧠 Advanced Gemini Intelligence**: Leverages the latest `google-genai` SDK with a robust model fallback chain (including `gemini-3.1-flash-lite`, `gemma-4-31b`, `gemini-2.5-flash`) and exponential backoff for a bulletproof experience.
 - **📊 Live Google Sheets Sync**: Connects directly to your Google Sheet to read real-time inventory. It knows exactly what bottles are "Open", "Closed", or "Reserved" and prioritizes open bottles.
-- **🍷 Custom Israeli Persona**: Pre-prompted with strict constraints: Kosher wines only, a preference for boutique producers (Flam, Raziel, Tzora, Feldstein), and deep knowledge of tannins, terroir, and chemical food pairings. 
+- **🍷 Fully Customizable Persona**: By default, the bot is a highly knowledgeable Sommelier. However, you can easily tweak its system prompt to match your specific needs (e.g., specific regions, dietary restrictions like Kosher/Vegan, preferred language, or conversational tone).
 - **☁️ Serverless Architecture**: Fully serverless backend using Vercel Serverless Functions and Telegram Webhooks. No active polling server required!
 
 ---
@@ -72,14 +72,18 @@ The project uses Python's built-in `unittest` framework with full API mocking to
 python -m unittest discover tests/
 ```
 
+### 5. Customizing Your Sommelier (Persona & Language)
+You can make the bot speak any language or follow specific dietary/wine restrictions (e.g., French only, Natural wines, Kosher wines, etc.). 
+Simply edit the `SYSTEM_INSTRUCTION` variable inside `sommelier_ai.py` to shape your perfect Sommelier!
+
 ---
 
-## 💬 Need Help? / צריכים עזרה?
+## 💬 Need Help?
 
-להרים סומלייה וירטואלי משלכם זה לא תמיד פשוט! אם אתם מסתבכים עם החיבור לגוגל שיטס, ההגדרות ב-Vercel, או סתם רוצים לשפר את סגנון הדיבור של הבוט – אני כאן.
+Building your own virtual Sommelier can be tricky! If you need any help connecting to Google Sheets, configuring the Vercel deployment, or tweaking the Gemini persona, I'm here to help.
 
 You can open an issue here on **[GitHub](https://github.com/Royc4515)** or connect with me on **[LinkedIn](https://www.linkedin.com/in/roy-carmelli/)**.
 
 ---
 
-*לחיים!* 🍷
+*Cheers!* 🍷
