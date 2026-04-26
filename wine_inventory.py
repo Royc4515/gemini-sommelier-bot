@@ -86,9 +86,9 @@ class WineInventory:
 
             lines.append(
                 f"{i}. {winery} — {wine_name}\n"
-                f"   בציר: {vintage} | זנים: {grapes}\n"
-                f"   סטטוס: {status} | מטרה: {purpose}\n"
-                f"   המלצת פתיחה: {opening_rec}"
+                f"   Vintage: {vintage} | Grapes: {grapes}\n"
+                f"   Status: {status} | Purpose: {purpose}\n"
+                f"   Recommendation: {opening_rec}"
             )
 
         return "\n\n".join(lines)
