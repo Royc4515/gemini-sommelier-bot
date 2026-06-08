@@ -18,11 +18,18 @@ class TelegramClient:
         token: str = os.environ["TELEGRAM_BOT_TOKEN"]
         self.api_url = f"{self.BASE_URL}/bot{token}"
 
-    def send_message(self, chat_id: int | str, text: str) -> dict:
+    def send_message(
+        self,
+        chat_id: int | str,
+        text: str,
+        reply_markup: dict | None = None,
+    ) -> dict:
         """Send a text message to *chat_id*.
 
         Messages longer than 4000 chars are split into multiple sequential
         messages so the user always receives the full response.
+        An optional *reply_markup* (e.g. an inline keyboard) is attached to the
+        LAST chunk only, so confirmation buttons appear after the full text.
         Returns the parsed JSON response from the last chunk sent.
         """
         import urllib.error
@@ -53,12 +60,16 @@ class TelegramClient:
                 return json.loads(response.read().decode("utf-8"))
 
         last_result = None
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
             payload_dict = {
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
             }
+            # reason: keyboard belongs on the final chunk so it renders below the
+            # complete message, not stranded mid-text on an early split.
+            if reply_markup is not None and index == len(chunks) - 1:
+                payload_dict["reply_markup"] = reply_markup
             try:
                 last_result = _send(payload_dict)
             except urllib.error.HTTPError as e:
@@ -75,3 +86,79 @@ class TelegramClient:
                     raise Exception(f"Telegram API Error: {e.code} - {error_body}") from e
 
         return last_result
+
+    # ------------------------------------------------------------------
+    # File download (used by /addwine to fetch label photos)
+    # ------------------------------------------------------------------
+
+    def get_file_path(self, file_id: str) -> str:
+        """Resolve a Telegram *file_id* to its temporary download path."""
+        req = urllib.request.Request(
+            url=f"{self.api_url}/getFile",
+            data=json.dumps({"file_id": file_id}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        return result["result"]["file_path"]
+
+    def download_file(self, file_path: str) -> bytes:
+        """Download raw bytes for a resolved *file_path*.
+
+        Note: file downloads use the /file/bot<token>/ host, NOT the /bot<token>/
+        API host used for method calls.
+        """
+        token = self.api_url.rsplit("/bot", 1)[1]  # recover token from api_url
+        url = f"{self.BASE_URL}/file/bot{token}/{file_path}"
+        with urllib.request.urlopen(url) as response:
+            return response.read()
+
+    def download_photo(self, file_id: str) -> bytes:
+        """Convenience: resolve a *file_id* and return its bytes."""
+        return self.download_file(self.get_file_path(file_id))
+
+    # ------------------------------------------------------------------
+    # Inline keyboard callbacks (used by the /addwine confirmation)
+    # ------------------------------------------------------------------
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> dict:
+        """Acknowledge a button tap so Telegram stops the loading spinner."""
+        data = {"callback_query_id": callback_query_id}
+        if text:
+            data["text"] = text
+        req = urllib.request.Request(
+            url=f"{self.api_url}/answerCallbackQuery",
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def edit_message_reply_markup(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        reply_markup: dict | None = None,
+    ) -> dict:
+        """Replace (or remove) the inline keyboard on an existing message.
+
+        Used after a confirm/cancel tap so the buttons cannot be tapped again
+        (visual half of the idempotency guard; the one-time token is the real one).
+        """
+        data = {"chat_id": chat_id, "message_id": message_id}
+        if reply_markup is not None:
+            data["reply_markup"] = reply_markup
+        req = urllib.request.Request(
+            url=f"{self.api_url}/editMessageReplyMarkup",
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            # Best-effort: a failed keyboard cleanup must not block the append.
+            return {}
