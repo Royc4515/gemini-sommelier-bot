@@ -7,7 +7,9 @@
  *
  *   1. Chat memory  (original) - reads/writes the bound "Sommelier Memory" sheet.
  *   2. Wine cellar ingestion (/addwine) - opens the cellar spreadsheet by ID and
- *      appends rows, plus a tiny KV store for the /addwine conversation state.
+ *      appends rows, plus a tiny KV store for the /addwine + /editwine state.
+ *      /editwine additionally lists rows (list_wines) and overwrites one row's
+ *      columns A-N in place (update_wine), located by sheet row index.
  *
  * SETUP / REDEPLOY (must be done in the Apps Script editor, not by the bot):
  *   1. Open the "Sommelier Memory" Google Sheet -> Extensions -> Apps Script.
@@ -64,6 +66,9 @@ function doGet(e) {
   if (action === "addwine_state") {
     return _jsonOut(_stateGet(e.parameter.chat_id));
   }
+  if (action === "list_wines") {
+    return _jsonOut(_listWines());
+  }
   // Default: original memory read protocol (unchanged).
   return _jsonOut(_memoryGet(e.parameter.chat_id));
 }
@@ -86,6 +91,7 @@ function doPost(e) {
   try {
     switch (action) {
       case "add_wine":       return _jsonOut(_addWine(payload));
+      case "update_wine":    return _jsonOut(_updateWine(payload));
       case "addwine_state":  return _jsonOut(_stateSet(payload));
       default:               return _jsonOut(_memorySet(payload)); // memory (legacy)
     }
@@ -181,6 +187,68 @@ function _addWine(payload) {
     "first_row": firstRow,
     "tab": sheet.getName()
   };
+}
+
+// ====================================================================
+// /editwine: list rows + update one row in place
+// ====================================================================
+
+function _listWines() {
+  // Return every row that holds a wine (cols A or B non-empty), with its
+  // 1-indexed sheet row, its A-N values, and its status cell. The row index is
+  // the unambiguous handle /editwine uses to write the edit back.
+  var sheet = _getCellarSheet();
+  var lastRow = _lastFilledWineRow(sheet);
+  var wines = [];
+  if (lastRow < 2) return {"wines": wines};
+
+  var statusCol = _findHeaderColumn(sheet, STATUS_HEADER_MARKER);
+  var data = sheet.getRange(2, 1, lastRow - 1, CELLAR_WRITE_COLS).getValues();
+  var statuses = (statusCol > 0)
+    ? sheet.getRange(2, statusCol, lastRow - 1, 1).getValues()
+    : null;
+
+  for (var i = 0; i < data.length; i++) {
+    var values = data[i];
+    if (String(values[0]).trim() === "" && String(values[1]).trim() === "") {
+      continue; // gap row (formula-only / blank) -> not a wine.
+    }
+    wines.push({
+      "row": i + 2, // data starts at sheet row 2.
+      "values": values,
+      "status": statuses ? statuses[i][0] : ""
+    });
+  }
+  return {"wines": wines};
+}
+
+function _updateWine(payload) {
+  // payload: { row: <1-indexed>, values: [14 cells A-N], expect: {winery, wine_name} }
+  // Overwrites ONLY columns A-N of that row. Never touches O/P/Q or the status.
+  var row = payload.row;
+  var values = payload.values;
+  if (!row || row < 2) return {"error": "Bad row: " + row};
+  if (!values || values.length !== CELLAR_WRITE_COLS) {
+    return {"error": "Expected " + CELLAR_WRITE_COLS + " cells, got " +
+                     (values ? values.length : 0)};
+  }
+
+  var sheet = _getCellarSheet();
+  if (row > sheet.getLastRow()) return {"error": "Row " + row + " out of range"};
+
+  // Identity guard: refuse to write if the row no longer holds the wine we
+  // listed (e.g. rows were inserted/deleted in the meantime).
+  var expect = payload.expect || {};
+  if (expect.winery !== undefined || expect.wine_name !== undefined) {
+    var current = sheet.getRange(row, 1, 1, 2).getValues()[0];
+    if (String(current[0]).trim() !== String(expect.winery || "").trim() ||
+        String(current[1]).trim() !== String(expect.wine_name || "").trim()) {
+      return {"error": "row_mismatch", "row": row};
+    }
+  }
+
+  sheet.getRange(row, 1, 1, CELLAR_WRITE_COLS).setValues([values]);
+  return {"status": "success", "row": row, "tab": sheet.getName()};
 }
 
 function _findHeaderColumn(sheet, headerName) {
