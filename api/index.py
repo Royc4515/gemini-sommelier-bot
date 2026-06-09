@@ -33,7 +33,12 @@ def application(environ, start_response):
     expected_secret = os.environ.get("TELEGRAM_SECRET_TOKEN", "")
     # WSGI converts HTTP headers to HTTP_UPPER_SNAKE_CASE
     incoming_secret = environ.get("HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN", "")
-    if expected_secret and incoming_secret != expected_secret:
+    # Fail closed: an unset secret would leave the webhook open to anyone who
+    # learns the URL, so a missing token is treated as a misconfiguration.
+    if not expected_secret:
+        sys.stderr.write("ERROR: TELEGRAM_SECRET_TOKEN is not set; rejecting request.\n")
+        return _respond("401 Unauthorized", "Unauthorized")
+    if incoming_secret != expected_secret:
         return _respond("401 Unauthorized", "Unauthorized")
 
     # --- Read body ---
@@ -88,8 +93,9 @@ def application(environ, start_response):
         if AddWine().handle_message(str(chat_id), message):
             return _respond("200 OK", "OK")
     except Exception as exc:
+        sys.stderr.write(f"ERROR: /addwine flow failed: {exc}\n")
         try:
-            TelegramClient().send_message(chat_id=chat_id, text=f"⚠️ שגיאה ב-/addwine: {exc}")
+            TelegramClient().send_message(chat_id=chat_id, text="⚠️ שגיאה ב-/addwine. נסה שוב.")
         except Exception:
             pass
         return _respond("200 OK", "OK")
@@ -147,16 +153,21 @@ def application(environ, start_response):
             long_term_summary=long_term_summary,
         )
 
-        memory.save_turn(str(chat_id), text, answer)
+        # Pass the freshly-read context so save_turn skips a webhook round trip.
+        memory.save_turn(
+            str(chat_id), text, answer,
+            history=history, long_term_summary=long_term_summary,
+        )
 
         telegram = TelegramClient()
         telegram.send_message(chat_id=chat_id, text=answer)
     except Exception as exc:
-        # Best-effort error notification to the user
+        sys.stderr.write(f"ERROR: sommelier flow failed: {exc}\n")
+        # Best-effort error notification to the user (no internal detail leaked)
         try:
             TelegramClient().send_message(
                 chat_id=chat_id,
-                text=f"⚠️ שגיאה פנימית: {exc}",
+                text="⚠️ שגיאה פנימית. נסה שוב בעוד רגע.",
             )
         except Exception:
             pass
