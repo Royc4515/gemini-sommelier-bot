@@ -11,6 +11,10 @@
  *      /editwine additionally lists rows (list_wines) and overwrites one row's
  *      columns A-N in place (update_wine), located by sheet row index.
  *
+ * NOTE: auto-archiving of "Finished" bottles is NOT handled here. It lives in
+ * a separate Apps Script bound to the cellar spreadsheet itself (an onEdit
+ * trigger); see cellar_apps_script.js in this repo.
+ *
  * SETUP / REDEPLOY (must be done in the Apps Script editor, not by the bot):
  *   1. Open the "Sommelier Memory" Google Sheet -> Extensions -> Apps Script.
  *   2. Paste this entire file, replacing everything.
