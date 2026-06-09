@@ -122,6 +122,42 @@ class _Backend:
             raise RuntimeError(f"Cellar append failed: {result}")
         return result
 
+    def list_wines(self) -> list[dict]:
+        """Return every cellar row that holds a wine, with its sheet row index.
+
+        Each item is ``{"row": <1-indexed sheet row>, "values": [A..N],
+        "status": <status cell>}``. Used by /editwine to let the user pick a
+        bottle and edit it in place (the row index is the unambiguous handle).
+        Returns [] if the backend is unconfigured or the call fails.
+        """
+        if not self._url:
+            return []
+        try:
+            url = f"{self._url}?action=list_wines"
+            if self._secret:
+                url += f"&key={urllib.parse.quote(self._secret)}"
+            with urllib.request.urlopen(url, timeout=self._TIMEOUT) as resp:
+                doc = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: list_wines failed: {exc}\n")
+            return []
+        return doc.get("wines") or []
+
+    def update_wine(self, row: int, values: list, expect: dict) -> dict:
+        """Overwrite columns A-N of *row* with *values*. Raises on failure.
+
+        *expect* carries the wine's original identity (winery + wine_name); the
+        Apps Script verifies it still matches that row before writing, so a row
+        that shifted between listing and confirmation is refused instead of
+        clobbering the wrong bottle.
+        """
+        result = self._post({
+            "action": "update_wine", "row": row, "values": values, "expect": expect,
+        })
+        if result.get("status") != "success":
+            raise RuntimeError(f"Cellar update failed: {result}")
+        return result
+
     def _post(self, payload: dict) -> dict:
         if self._secret:
             payload = {**payload, "key": self._secret}
@@ -464,20 +500,25 @@ def _confirm_keyboard(token: str) -> dict:
 # Lenient blank-field fill parser
 # ======================================================================
 
-def _match_label(token: str) -> tuple[str | None, str]:
-    """Return (record_key, value) if *token* starts with a known label, else (None, '')."""
-    for label, key in _FILL_LABELS:
+def _match_label(token: str, labels: tuple = _FILL_LABELS) -> tuple[str | None, str]:
+    """Return (record_key, value) if *token* starts with a known label, else (None, '').
+
+    *labels* is the (label, key) prefix table to match against; /editwine passes
+    a wider one so the label-fact fields (winery, region, ...) are editable too.
+    """
+    for label, key in labels:
         if token.startswith(label):
             value = token[len(label):].lstrip(" :\t")
             return key, value.strip()
     return None, ""
 
 
-def _apply_fill(records: list[dict], text: str) -> None:
+def _apply_fill(records: list[dict], text: str, labels: tuple = _FILL_LABELS) -> None:
     """Parse a forgiving line like 'מחיר: 69, חנות: אינטרנט' into *records* in place.
 
     With multiple wines, a token may carry a leading '2:' to target one wine;
     otherwise the value applies to all. Unparsed tokens are ignored.
+    *labels* selects which fields are fillable (see _match_label).
     """
     multi = len(records) > 1
     for raw in re.split(r"[,\n]", text):
@@ -492,7 +533,7 @@ def _apply_fill(records: list[dict], text: str) -> None:
                 target = int(m.group(1)) - 1  # 1-based for the user.
                 token = m.group(2).strip()
 
-        key, value = _match_label(token)
+        key, value = _match_label(token, labels)
         if not key or value == "":
             continue
         if key == "quantity":

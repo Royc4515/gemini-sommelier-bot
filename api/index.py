@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from addwine import AddWine               # noqa: E402
+from editwine import EditWine             # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
@@ -63,7 +64,10 @@ def application(environ, start_response):
         if allowed_user_id and str(cb_chat_id) != allowed_user_id:
             return _respond("200 OK", "OK — unauthorized user")
         try:
-            AddWine().handle_callback(callback)
+            # /addwine and /editwine each own their own callback namespace; try
+            # add first, fall through to edit if it wasn't an addwine button.
+            if not AddWine().handle_callback(callback):
+                EditWine().handle_callback(callback)
         except Exception:
             pass
         return _respond("200 OK", "OK")
@@ -92,10 +96,12 @@ def application(environ, start_response):
     try:
         if AddWine().handle_message(str(chat_id), message):
             return _respond("200 OK", "OK")
+        if EditWine().handle_message(str(chat_id), message):
+            return _respond("200 OK", "OK")
     except Exception as exc:
-        sys.stderr.write(f"ERROR: /addwine flow failed: {exc}\n")
+        sys.stderr.write(f"ERROR: /addwine|/editwine flow failed: {exc}\n")
         try:
-            TelegramClient().send_message(chat_id=chat_id, text="⚠️ שגיאה ב-/addwine. נסה שוב.")
+            TelegramClient().send_message(chat_id=chat_id, text="⚠️ שגיאה בעיבוד הבקשה. נסה שוב.")
         except Exception:
             pass
         return _respond("200 OK", "OK")

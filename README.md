@@ -27,6 +27,7 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 - **Serverless Execution**: Deployed on Vercel Serverless Functions via Telegram Webhooks. No active polling or persistent compute.
 - **Dynamic Inventory Sync**: Live queries to Google Sheets. Explicitly respects "Open" vs. "Closed" bottle statuses for routing recommendations.
 - **Wine Auto-Ingestion (`/addwine`)**: Add bottles by sending front + back label photos (fused in one multimodal call) or a free-text description of one or more wines. The bot extracts the data, shows a confirmation with inline buttons, and on approval appends one row per wine to the cellar.
+- **Edit Existing Wines (`/editwine`)**: Pick a bottle already in the cellar (from a numbered list, or narrow it by typing part of its name) and fill in or correct any missing fields using the same forgiving `key: value` syntax. On approval the bot overwrites exactly that row's columns A-N in place.
 - **Resilient AI Pipeline**: Integrates the `google-genai` SDK with an automatic fallback chain (`gemini-3.1-flash-lite` → `gemma-4-31b` → `gemini-2.5-flash`) and exponential backoff to mitigate transient API errors.
 - **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via the system instructions within `sommelier_ai.py`.
 
@@ -46,6 +47,20 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 The bot reasons about `ייעוד` (best use/occasion), `המלצת פתיחה` (ready now vs hold-until-year, by vintage and the grape/region/producer's aging potential), and `חלון שתייה` (optimal drinking-year range). The `הערות טעימה` it writes are an *expected* profile (an educated prediction, since the bottle is unopened), folded together with the factual label data - all editable before writing.
 
 The bot writes columns A-N, plus it defaults the `סטטוס חדש` (status) column to `Closed` for each newly added bottle (located by header name, so the O/P/Q value/sort formulas are never touched). The remaining O/P/Q columns are managed manually.
+
+---
+
+## ✏️ Editing Wines (`/editwine`)
+
+`/editwine` updates a bottle that is already in the cellar - handy for filling in fields you left blank when adding it:
+
+1. `/editwine` - the bot loads the cellar and shows a numbered list of your bottles. Type a word (winery/name) to narrow the list first if it is long.
+2. Reply with the number of the wine you want to edit.
+3. The bot shows that wine's current fields, marking blanks as `(ריק)`.
+4. Send a forgiving line to fill or correct fields, e.g. `מחיר: 80, חנות: אינטרנט, חלון שתייה: 2027-2032`. Every column A-N is editable here (including label facts like `יקב`, `אזור`, `זן`), not just the manual blanks.
+5. Tap **עדכון** to write. The bot overwrites only columns A-N of that exact row (O/P/Q and the status are never touched). `/cancel` aborts at any point.
+
+Editing goes through the **same Apps Script Web App** as `/addwine` (`action="update_wine"`), locating the bottle by its sheet row index. A safety identity check (the row's original `יקב`/`שם היין`) refuses the write if the row shifted between listing and confirmation, so an edit can never clobber the wrong bottle. The list itself is fetched via `action="list_wines"`.
 
 > **Write mechanism / no second auth path.** The bot reads the cellar via a public CSV export URL and has no writable Google client. Writes (and the `/addwine` conversation state) go through the **same Apps Script Web App** already used for chat memory (`SHEETS_MEMORY_URL`), which executes as the sheet owner. After editing `apps_script.js`, paste it into the bound script (Extensions → Apps Script), confirm `CELLAR_FILE_ID`, and **redeploy the existing Web App version** so the URL stays the same.
 >
