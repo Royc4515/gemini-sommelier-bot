@@ -71,18 +71,25 @@ function _archiveRow(sheet, row) {
   var archive = ss.getSheetByName(ARCHIVE_SHEET_NAME);
   if (!archive) {
     archive = ss.insertSheet(ARCHIVE_SHEET_NAME);
+  }
+  // A trimmed Archive tab (empty columns deleted) is narrower than the cellar,
+  // which makes copyTo/setValues throw "destination exceeds sheet size". Grow
+  // the grid to fit before writing.
+  if (archive.getMaxColumns() < width) {
+    archive.insertColumnsAfter(archive.getMaxColumns(), width - archive.getMaxColumns());
+  }
+  if (archive.getLastRow() === 0) {
     archive.getRange(1, 1, 1, width).setValues(sheet.getRange(1, 1, 1, width).getValues());
   }
 
   var source = sheet.getRange(row, 1, 1, width);
   var values = source.getValues();              // snapshot BEFORE deleting.
-  var destRow = Math.max(2, archive.getLastRow() + 1);
-  var dest = archive.getRange(destRow, 1, 1, width);
 
-  // Keep the cell formatting/RTL/alignment, but write the computed values so we
-  // never carry live formulas into the Archive tab.
-  source.copyTo(dest, { formatOnly: true });
-  dest.setValues(values);
+  // appendRow auto-extends the row count (copyTo/setValues do not), so use it
+  // to write the frozen values, then copy formatting onto the row it created.
+  archive.appendRow(values[0]);
+  var destRow = archive.getLastRow();
+  source.copyTo(archive.getRange(destRow, 1, 1, width), { formatOnly: true });
 
   sheet.deleteRow(row);
 }
