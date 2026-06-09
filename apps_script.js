@@ -38,6 +38,7 @@ var CELLAR_FILE_ID = "1xMwKiTr7JZ__vcLBKQrUTR8it__dQVCnHfd9k3_wZxo";
 // Header that identifies the main cellar tab at runtime (spec: do not assume gid).
 var CELLAR_HEADER_MARKER = "יקב"; // "יקב" (winery), column A header.
 var CELLAR_WRITE_COLS = 14;                      // Columns A-N only. Never O/P/Q.
+var STATUS_HEADER_MARKER = "סטטוס חדש";          // status column (Open/Closed/Finished), lives outside A-N.
 
 var STATE_SHEET_NAME = "AddWine State";          // KV tab for /addwine conversation.
 
@@ -162,12 +163,34 @@ function _addWine(payload) {
 
   sheet.getRange(firstRow, 1, rows.length, CELLAR_WRITE_COLS).setValues(rows);
 
+  // Default the status column for the freshly added rows (new bottles are
+  // unopened -> "Closed"). Located by header name so we never assume its
+  // position and never overwrite the O/P/Q value/sort formulas. Silently
+  // skipped if the column is absent.
+  var status = payload.status || "Closed";
+  var statusCol = _findHeaderColumn(sheet, STATUS_HEADER_MARKER);
+  if (statusCol > 0) {
+    var statusValues = [];
+    for (var s = 0; s < rows.length; s++) statusValues.push([status]);
+    sheet.getRange(firstRow, statusCol, rows.length, 1).setValues(statusValues);
+  }
+
   return {
     "status": "success",
     "rows_written": rows.length,
     "first_row": firstRow,
     "tab": sheet.getName()
   };
+}
+
+function _findHeaderColumn(sheet, headerName) {
+  // Returns the 1-indexed column whose row-1 header equals headerName, else -1.
+  var lastCol = Math.max(1, sheet.getLastColumn());
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  for (var c = 0; c < headers.length; c++) {
+    if (String(headers[c]).trim() === headerName) return c + 1;
+  }
+  return -1;
 }
 
 function _getCellarSheet() {

@@ -45,11 +45,11 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 
 The bot reasons about `ייעוד` (best use/occasion), `המלצת פתיחה` (ready now vs hold-until-year, by vintage and the grape/region/producer's aging potential), and `חלון שתייה` (optimal drinking-year range). The `הערות טעימה` it writes are an *expected* profile (an educated prediction, since the bottle is unopened), folded together with the factual label data - all editable before writing.
 
-The bot writes only columns A-N. Columns O/P/Q (inventory value formula, status, sort) are managed manually.
+The bot writes columns A-N, plus it defaults the `סטטוס חדש` (status) column to `Closed` for each newly added bottle (located by header name, so the O/P/Q value/sort formulas are never touched). The remaining O/P/Q columns are managed manually.
 
 > **Write mechanism / no second auth path.** The bot reads the cellar via a public CSV export URL and has no writable Google client. Writes (and the `/addwine` conversation state) go through the **same Apps Script Web App** already used for chat memory (`SHEETS_MEMORY_URL`), which executes as the sheet owner. After editing `apps_script.js`, paste it into the bound script (Extensions → Apps Script), confirm `CELLAR_FILE_ID`, and **redeploy the existing Web App version** so the URL stays the same.
 >
-> **Column O edge case.** If column O holds per-row `=G*H` formulas, a newly appended row leaves O blank. Convert O to a single `ARRAYFORMULA` at the header so new rows auto-compute. The `inspect_o` action in the Apps Script reports which style is in use; `ping_write` verifies Editor access with a self-cleaning test write.
+> **Column O edge case.** If column O holds per-row `=G*H` formulas, a newly appended row leaves O blank. Convert O to a single `ARRAYFORMULA` at the header so new rows auto-compute.
 
 ---
 
