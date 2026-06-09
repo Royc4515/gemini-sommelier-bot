@@ -81,13 +81,23 @@ pip install -r requirements.txt
 ```
 
 ### 3. Environment Variables
-Create a `.env.local` file in the root directory:
+Set these in Vercel (or a local `.env.local` file):
 ```env
-TELEGRAM_TOKEN=your_telegram_bot_token
+# Required
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_SECRET_TOKEN=your_webhook_secret     # required; webhook fails closed without it
 GEMINI_API_KEY=your_gemini_api_key
-GOOGLE_SHEET_URL=your_google_sheet_url
-GOOGLE_SERVICE_ACCOUNT_JSON={"type": "service_account", ...}
+WINE_CSV_URL=https://docs.google.com/.../export?format=csv   # public CSV export
+
+# Optional
+ALLOWED_USER_ID=your_telegram_chat_id         # restrict the bot to a single user
+SHEETS_MEMORY_URL=https://script.google.com/.../exec   # Apps Script Web App (memory + /addwine)
+SHEETS_SECRET=shared_secret                   # must match BOT_SECRET in the Apps Script properties
+CELLAR_FILE_ID=your_cellar_spreadsheet_id     # defaults to the bundled sheet id
 ```
+> **`SHEETS_SECRET`**: the Apps Script Web App is deployed "Anyone", so this shared
+> secret (matched against the script's `BOT_SECRET` property) is what protects your
+> sheets from anyone who learns the URL. Set both, or the endpoint stays open.
 
 ### 4. Running Tests
 The project uses Python's built-in `unittest` framework with full API mocking to ensure reliability across all API boundaries.

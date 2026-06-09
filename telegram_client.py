@@ -6,6 +6,8 @@ Lightweight Telegram Bot API wrapper using only ``urllib.request``.
 
 import json
 import os
+import re
+import urllib.error
 import urllib.request
 
 
@@ -15,8 +17,8 @@ class TelegramClient:
     BASE_URL = "https://api.telegram.org"
 
     def __init__(self):
-        token: str = os.environ["TELEGRAM_BOT_TOKEN"]
-        self.api_url = f"{self.BASE_URL}/bot{token}"
+        self.token: str = os.environ["TELEGRAM_BOT_TOKEN"]
+        self.api_url = f"{self.BASE_URL}/bot{self.token}"
 
     def send_message(
         self,
@@ -32,9 +34,6 @@ class TelegramClient:
         LAST chunk only, so confirmation buttons appear after the full text.
         Returns the parsed JSON response from the last chunk sent.
         """
-        import urllib.error
-        import re
-
         # Escape unhandled <, >, & to satisfy Telegram HTML parser constraints
         safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -109,8 +108,7 @@ class TelegramClient:
         Note: file downloads use the /file/bot<token>/ host, NOT the /bot<token>/
         API host used for method calls.
         """
-        token = self.api_url.rsplit("/bot", 1)[1]  # recover token from api_url
-        url = f"{self.BASE_URL}/file/bot{token}/{file_path}"
+        url = f"{self.BASE_URL}/file/bot{self.token}/{file_path}"
         with urllib.request.urlopen(url) as response:
             return response.read()
 

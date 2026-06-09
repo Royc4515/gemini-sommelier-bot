@@ -1,8 +1,9 @@
 """
 sommelier_ai.py — Logic Layer
 
-Wraps the Google GenAI (gemini-2.5-flash) client with domain-specific
-system instructions for the Wine Sommelier persona.
+Wraps the Google GenAI client (primary model gemini-3.1-flash-lite, with a
+fallback chain — see FALLBACK_MODELS) with domain-specific system instructions
+for the Wine Sommelier persona.
 """
 
 import json

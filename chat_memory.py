@@ -12,6 +12,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -40,6 +41,8 @@ class ChatMemory:
     def __init__(self):
         # We fail fast if the environment variable isn't set
         self._webhook_url = os.environ.get("SHEETS_MEMORY_URL", "").strip()
+        # Shared secret gating the Apps Script Web App (see apps_script.js).
+        self._secret = os.environ.get("SHEETS_SECRET", "").strip()
 
     # ------------------------------------------------------------------
     # Public API
@@ -74,18 +77,33 @@ class ChatMemory:
 
         return active_history, long_term_summary
 
-    def save_turn(self, chat_id: str, user_msg: str, bot_msg: str) -> None:
-        """Persist a user+model turn to the active session history."""
+    def save_turn(
+        self,
+        chat_id: str,
+        user_msg: str,
+        bot_msg: str,
+        history: list[dict] | None = None,
+        long_term_summary: str | None = None,
+    ) -> None:
+        """Persist a user+model turn to the active session history.
+
+        When *history* and *long_term_summary* are supplied (e.g. from a
+        ``get_context`` call earlier in the same request), the read is skipped —
+        saving a webhook round trip. Otherwise the document is fetched first.
+        """
         if not self._webhook_url:
             return
 
-        try:
-            doc = self._fetch_document(chat_id)
-        except Exception:
-            doc = {}
+        if history is None or long_term_summary is None:
+            try:
+                doc = self._fetch_document(chat_id)
+            except Exception:
+                doc = {}
+            history = doc.get("active_history", [])
+            long_term_summary = doc.get("long_term_summary", "")
 
         now = time.time()
-        history: list[dict] = doc.get("active_history", [])
+        history = list(history)
 
         history.append({"role": "user",  "text": user_msg, "ts": now})
         history.append({"role": "model", "text": bot_msg,  "ts": now})
@@ -96,7 +114,7 @@ class ChatMemory:
         try:
             self._write_document(chat_id, {
                 "active_history": history,
-                "long_term_summary": doc.get("long_term_summary", ""),
+                "long_term_summary": long_term_summary,
                 "updated_at": now,
             })
         except Exception:
@@ -144,7 +162,6 @@ class ChatMemory:
         word_count = len(combined.split())
         if word_count > self.MAX_SUMMARY_WORDS:
             try:
-                ai = SommelierAI()
                 combined = ai.summarize(self._COMPRESS_PROMPT, combined)
             except Exception:
                 pass
@@ -167,6 +184,8 @@ class ChatMemory:
     def _fetch_document(self, chat_id: str) -> dict:
         """GET history from Apps Script Webhook."""
         url = f"{self._webhook_url}?chat_id={chat_id}"
+        if self._secret:
+            url += f"&key={urllib.parse.quote(self._secret)}"
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -179,6 +198,8 @@ class ChatMemory:
             "long_term_summary": data.get("long_term_summary", ""),
             "updated_at": data.get("updated_at", time.time())
         }
+        if self._secret:
+            payload["key"] = self._secret
         encoded_data = json.dumps(payload).encode("utf-8")
         
         req = urllib.request.Request(

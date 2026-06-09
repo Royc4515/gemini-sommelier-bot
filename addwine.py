@@ -18,7 +18,9 @@ through the same Web App (action="add_wine"), so there is no second auth path.
 import json
 import os
 import re
+import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime
@@ -71,6 +73,8 @@ class _Backend:
 
     def __init__(self):
         self._url = os.environ.get("SHEETS_MEMORY_URL", "").strip()
+        # Shared secret gating the Apps Script Web App (see apps_script.js).
+        self._secret = os.environ.get("SHEETS_SECRET", "").strip()
 
     @property
     def configured(self) -> bool:
@@ -82,6 +86,8 @@ class _Backend:
             return None
         try:
             url = f"{self._url}?action=addwine_state&chat_id={chat_id}"
+            if self._secret:
+                url += f"&key={urllib.parse.quote(self._secret)}"
             with urllib.request.urlopen(url, timeout=self._TIMEOUT) as resp:
                 doc = json.loads(resp.read().decode("utf-8"))
         except Exception:
@@ -112,6 +118,8 @@ class _Backend:
         return result
 
     def _post(self, payload: dict) -> dict:
+        if self._secret:
+            payload = {**payload, "key": self._secret}
         req = urllib.request.Request(
             self._url,
             data=json.dumps(payload).encode("utf-8"),
@@ -233,9 +241,10 @@ class AddWine:
                     front, "image/jpeg", back, "image/jpeg"
                 )
             except Exception as exc:
+                sys.stderr.write(f"ERROR: /addwine label read failed: {exc}\n")
                 self.backend.clear_state(chat_id)
                 self.telegram.send_message(
-                    chat_id, f"לא הצלחתי לקרוא את התוויות: {exc}\nנסה /addwine שוב."
+                    chat_id, "לא הצלחתי לקרוא את התוויות. נסה /addwine שוב עם תמונות ברורות יותר."
                 )
                 return
             self._to_confirm(chat_id, wines)
@@ -254,9 +263,10 @@ class AddWine:
             try:
                 wines = SommelierAI().extract_wines_from_text(text)
             except Exception as exc:
+                sys.stderr.write(f"ERROR: /addwine text parse failed: {exc}\n")
                 self.backend.clear_state(chat_id)
                 self.telegram.send_message(
-                    chat_id, f"לא הצלחתי לנתח את התיאור: {exc}\nנסה /addwine שוב."
+                    chat_id, "לא הצלחתי לנתח את התיאור. נסה /addwine שוב."
                 )
                 return
             self._to_confirm(chat_id, wines)
@@ -314,7 +324,8 @@ class AddWine:
         try:
             result = self.backend.append_rows(rows)
         except Exception as exc:
-            self.telegram.send_message(chat_id, f"שגיאה בכתיבה לגיליון: {exc}")
+            sys.stderr.write(f"ERROR: cellar append failed: {exc}\n")
+            self.telegram.send_message(chat_id, "שגיאה בכתיבה לגיליון. נסה שוב.")
             return
 
         count = result.get("rows_written", len(rows))

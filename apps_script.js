@@ -17,6 +17,12 @@
  *      "New version" -> Deploy. (Reusing the deployment keeps the same URL, so
  *      SHEETS_MEMORY_URL does not change.)
  *   5. Execute as: "Me". Who has access: "Anyone".
+ *   6. SECURITY: Project Settings -> Script Properties -> add
+ *      BOT_SECRET = <the same value as the bot's SHEETS_SECRET env var>. The
+ *      deployment is "Anyone" (Google requires this for an unauthenticated
+ *      webhook), so this shared secret is the ONLY thing standing between the
+ *      open URL and your sheets. Until BOT_SECRET is set the endpoint stays
+ *      open for backward compatibility — set it.
  *
  * Memory sheet (bound spreadsheet, first/active sheet) headers in row 1, A-D:
  *   A1: Chat ID | B1: Active History | C1: Long Term Summary | D1: Last Updated
@@ -34,10 +40,24 @@ var CELLAR_HEADER_MARKER = "יקב"; // "יקב" (winery), column A header.
 var CELLAR_WRITE_COLS = 14;                      // Columns A-N only. Never O/P/Q.
 
 var STATE_SHEET_NAME = "AddWine State";          // KV tab for /addwine conversation.
-var SCRATCH_SHEET_NAME = "Bot Scratch";          // Throwaway tab for ping_write test.
+
+
+/**
+ * Shared-secret gate. Returns true when BOT_SECRET is unset (legacy: keeps the
+ * running bot working before the property is configured) or when the caller's
+ * key matches. Set BOT_SECRET in Script Properties to close the open back door.
+ */
+function _authorized(provided) {
+  var expected = PropertiesService.getScriptProperties().getProperty("BOT_SECRET");
+  if (!expected) return true;
+  return String(provided || "") === expected;
+}
 
 
 function doGet(e) {
+  if (!_authorized(e && e.parameter && e.parameter.key)) {
+    return _jsonOut({"error": "unauthorized"});
+  }
   var action = (e.parameter && e.parameter.action) || "memory";
 
   if (action === "addwine_state") {
@@ -56,14 +76,16 @@ function doPost(e) {
     return _jsonOut({"error": "Bad JSON: " + err});
   }
 
+  if (!_authorized(payload.key)) {
+    return _jsonOut({"error": "unauthorized"});
+  }
+
   var action = payload.action || "memory";
 
   try {
     switch (action) {
       case "add_wine":       return _jsonOut(_addWine(payload));
       case "addwine_state":  return _jsonOut(_stateSet(payload));
-      case "ping_write":     return _jsonOut(_pingWrite());
-      case "inspect_o":      return _jsonOut(_inspectColumnO());
       default:               return _jsonOut(_memorySet(payload)); // memory (legacy)
     }
   } catch (err) {
@@ -226,44 +248,6 @@ function _stateSet(payload) {
     sheet.appendRow([chatId, stateJson, updatedAt]);
   }
   return {"status": "success"};
-}
-
-
-// ====================================================================
-// /addwine: Step 0 helpers (write-access proof + column O inspection)
-// ====================================================================
-
-function _pingWrite() {
-  // Proves Editor access to the CELLAR spreadsheet without dirtying the cellar:
-  // write -> read back -> clear a scratch cell in a throwaway tab.
-  var ss = SpreadsheetApp.openById(CELLAR_FILE_ID);
-  var sheet = ss.getSheetByName(SCRATCH_SHEET_NAME);
-  if (!sheet) sheet = ss.insertSheet(SCRATCH_SHEET_NAME);
-
-  var token = "ping-" + new Date().getTime();
-  sheet.getRange("A1").setValue(token);
-  SpreadsheetApp.flush();
-  var readBack = sheet.getRange("A1").getValue();
-  sheet.getRange("A1").clearContent();
-
-  return {
-    "status": readBack === token ? "ok" : "mismatch",
-    "wrote": token,
-    "read_back": readBack
-  };
-}
-
-function _inspectColumnO() {
-  // Surfaces how the inventory-value column O is built so we can advise on the
-  // ARRAYFORMULA edge case. The bot itself never writes O/P/Q.
-  var sheet = _getCellarSheet();
-  var headerO = sheet.getRange("O1").getValue();
-  var formulaO2 = sheet.getRange("O2").getFormula();
-  return {
-    "header_O": headerO,
-    "O2_formula": formulaO2,
-    "per_row_formula": formulaO2 !== "" && formulaO2.indexOf("ARRAYFORMULA") === -1
-  };
 }
 
 
