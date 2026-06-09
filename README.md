@@ -39,9 +39,11 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 1. `/addwine` - the bot asks for a front photo or a text description.
 2. **Photo path**: send the front label, then the back label. The bot downloads both and reads them in a single multimodal call.
 3. **Text path**: send a description instead (e.g. "Flam Classico 2021, Judean Hills, 14%"). One message may list several wines.
-4. The bot shows a confirmation with the parsed fields, the blank manual fields (price / store / purpose / drinking window), and `✅ אישור` / `❌ ביטול` buttons.
-5. Reply with a forgiving line to fill blanks before writing, e.g. `מחיר: 69, חנות: אינטרנט, ייעוד: שבת`. For multiple wines, prefix an index: `2: מחיר 80`.
+4. The bot shows a confirmation with the parsed label facts, its own reasoned suggestions (purpose, opening recommendation, drinking window, an expected tasting profile), the still-blank manual fields (price / store), and `✅ אישור` / `❌ ביטול` buttons.
+5. Reply with a forgiving line to edit any field before writing, e.g. `מחיר: 69, חנות: אינטרנט, ייעוד: שבת, חלון שתייה: 2027-2032`. For multiple wines, prefix an index: `2: מחיר 80`.
 6. Tap **אישור** to append. `/cancel` aborts at any point.
+
+The bot reasons about `ייעוד` (best use/occasion), `המלצת פתיחה` (ready now vs hold-until-year, by vintage and the grape/region/producer's aging potential), and `חלון שתייה` (optimal drinking-year range). The `הערות טעימה` it writes are an *expected* profile (an educated prediction, since the bottle is unopened), folded together with the factual label data - all editable before writing.
 
 The bot writes only columns A-N. Columns O/P/Q (inventory value formula, status, sort) are managed manually.
 
