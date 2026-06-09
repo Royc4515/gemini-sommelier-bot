@@ -47,6 +47,10 @@ _CONFIRM = "CONFIRM"
 _FILL_LABELS = (
     ("חלון שתייה", "drinking_window"),
     ("חלון", "drinking_window"),
+    ("המלצת פתיחה", "opening_recommendation"),
+    ("המלצת", "opening_recommendation"),
+    ("המלצה", "opening_recommendation"),
+    ("הערות", "tasting_notes"),
     ("מחיר", "price"),
     ("חנות", "store"),
     ("מקור", "store"),
@@ -334,12 +338,13 @@ class AddWine:
 # ======================================================================
 
 def _opening_recommendation(wine_type: str | None) -> str:
-    # Reds are served as-is; everything else (white/rose/sparkling) gets chilled.
+    # Fallback only (used when the model returns no verdict): reds as-is,
+    # everything else (white/rose/sparkling) chilled.
     return "Ready to Drink 🍷" if wine_type == "אדום" else "Chill Well (7-9°C)"
 
 
 def _build_tasting_notes(wine: dict) -> str:
-    """Assemble column N from extracted FACTS only (never invented descriptors)."""
+    """Fallback column N from extracted FACTS only (used if the model gave none)."""
     parts: list[str] = []
     if wine.get("abv"):
         parts.append(f"{wine['abv']} אלכוהול")
@@ -354,12 +359,18 @@ def _build_tasting_notes(wine: dict) -> str:
 
 
 def _build_record(wine: dict) -> dict:
-    """Turn raw extracted fields into a confirmable record with bot-applied values."""
+    """Turn raw extracted fields into a confirmable record with bot-applied values.
+
+    purpose / tasting_notes / opening_recommendation / drinking_window are the
+    model's reasoned suggestions; the bot only fills in deterministic fallbacks
+    when the model returned nothing, and the user can edit any of them.
+    """
     today = datetime.now(_TZ).strftime("%d/%m/%Y")
+    wine_type = wine.get("type") or ""
     return {
         "winery": wine.get("winery") or "",
         "wine_name": wine.get("wine_name") or "",
-        "type": wine.get("type") or "",
+        "type": wine_type,
         "vintage": wine.get("vintage") or "NV",
         "grape_blend": wine.get("grape_blend") or "",
         "region": wine.get("region") or "",
@@ -367,10 +378,14 @@ def _build_record(wine: dict) -> dict:
         "price": "",
         "store": "",
         "purchase_date": today,
-        "purpose": "",
-        "drinking_window": "",
-        "opening_recommendation": _opening_recommendation(wine.get("type")),
-        "tasting_notes": _build_tasting_notes(wine),
+        "purpose": wine.get("purpose") or "",
+        "drinking_window": wine.get("drinking_window") or "",
+        # reason: prefer the model's reasoned verdict/profile; fall back to the
+        # simple type rule / facts-only notes only when the model gave nothing.
+        "opening_recommendation": (
+            wine.get("opening_recommendation") or _opening_recommendation(wine_type)
+        ),
+        "tasting_notes": wine.get("tasting_notes") or _build_tasting_notes(wine),
     }
 
 
@@ -403,15 +418,17 @@ def _render_confirmation(records: list[dict]) -> str:
             f"זן/בלנד: {r['grape_blend'] or '-'}\n"
             f"אזור: {r['region'] or '-'}\n"
             f"כמות: {r['quantity']}\n"
-            f"המלצת פתיחה: {r['opening_recommendation']}\n"
+            f"- המלצות הבוט (ניתן לערוך) -\n"
+            f"ייעוד: {r['purpose'] or '-'}\n"
+            f"המלצת פתיחה: {r['opening_recommendation'] or '-'}\n"
+            f"חלון שתייה: {r['drinking_window'] or '-'}\n"
             f"הערות טעימה: {r['tasting_notes'] or '-'}\n"
-            f"- שדות ידניים -\n"
-            f"מחיר: {r['price'] or '(ריק)'} | חנות: {r['store'] or '(ריק)'}\n"
-            f"ייעוד: {r['purpose'] or '(ריק)'} | חלון שתייה: {r['drinking_window'] or '(ריק)'}"
+            f"- שדות ידניים (ריקים) -\n"
+            f"מחיר: {r['price'] or '(ריק)'} | חנות: {r['store'] or '(ריק)'}"
         )
     footer = (
-        "\n\nלאישור לחץ אישור, או שלח שורה למילוי שדות.\n"
-        "לדוגמה: מחיר: 69, חנות: אינטרנט, ייעוד: שבת"
+        "\n\nלאישור לחץ אישור, או שלח שורה לעדכון שדות (גם המלצות הבוט).\n"
+        "לדוגמה: מחיר: 69, חנות: אינטרנט, ייעוד: שבת, חלון שתייה: 2027-2032"
     )
     if multi:
         footer += "\nלמילוי יין מסוים הקדם מספר, למשל: 2: מחיר 80"

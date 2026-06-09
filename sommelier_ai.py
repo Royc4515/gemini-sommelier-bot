@@ -53,18 +53,23 @@ _SUMMARIZER_SYSTEM = (
 # ------------------------------------------------------------------
 # /addwine extraction prompt
 # ------------------------------------------------------------------
-# The keys the model must return per wine. The bot maps these to sheet columns;
-# values the bot fills itself (quantity, dates, recommendation) are NOT here.
+# The keys the model must return per wine. The first block is read off the label
+# (facts); the second block is the sommelier's reasoned judgment (editable
+# suggestions). The bot maps these to sheet columns; values the bot fills itself
+# (quantity, purchase_date) are NOT here.
 _WINE_KEYS = (
     "winery", "wine_name", "type", "vintage", "grape_blend",
     "region", "abv", "aging", "mevushal", "filtered",
+    "purpose", "tasting_notes", "opening_recommendation", "drinking_window",
 )
 
 _EXTRACTION_PROMPT = (
-    "You extract structured wine-cellar data from wine labels or a text description.\n"
+    "You extract wine-cellar data AND give a sommelier's judgment, from wine labels\n"
+    "or a text description. Reply for each wine with one JSON object.\n"
     "Return ONLY a JSON array. Each element is one wine, an object with EXACTLY these keys:\n"
-    '  winery, wine_name, type, vintage, grape_blend, region, abv, aging, mevushal, filtered\n'
-    "Rules:\n"
+    "  winery, wine_name, type, vintage, grape_blend, region, abv, aging, mevushal,\n"
+    "  filtered, purpose, tasting_notes, opening_recommendation, drinking_window\n"
+    "\nFACTS - read from the label/description, never fabricate a fact:\n"
     "- winery, wine_name: from the FRONT label (or the description). Keep the label's own\n"
     "  language. If it is in Latin script, ALSO give a Hebrew transliteration formatted as\n"
     '  "English (עברית)", e.g. "Villa Cape (וילה קייפ)".\n'
@@ -77,9 +82,24 @@ _EXTRACTION_PROMPT = (
     "- aging: factual aging statement only (e.g. \"10 months in oak\"), else null.\n"
     "- mevushal: \"yes\"/\"no\" if stated (kosher mevushal), else null.\n"
     "- filtered: factual statement only (e.g. \"unfiltered\"), else null.\n"
-    "HARD RULE: never invent subjective tasting/aroma/flavor notes. The bottle is\n"
-    "unopened; fabricated tasting notes are fake data. Report label/described FACTS only.\n"
-    "Missing or unknown values must be null. Output the JSON array and nothing else."
+    "\nJUDGMENT - you ARE expected to reason here. Write these in Hebrew. They are\n"
+    "suggestions the user reviews and can edit, so be useful and specific:\n"
+    "- purpose (ייעוד): the best use/occasion for THIS wine given its style, body, grape,\n"
+    "  region and that it is kosher. One short Hebrew phrase, e.g. 'יין לאירוח ולמנות בשר',\n"
+    "  'יין יומיומי לשתייה', 'יין לשמירה ולהזדמנות מיוחדת'.\n"
+    "- tasting_notes (הערות): the EXPECTED flavor/aroma/structure profile, inferred from the\n"
+    "  grape, region, producer and style. Phrase it as an expectation (start with 'צפוי:'),\n"
+    "  NOT as if the bottle was tasted, and fold in the factual data (abv, oak, unfiltered).\n"
+    "- opening_recommendation (המלצת פתיחה): judge whether the wine is ready to drink now or\n"
+    "  better kept, from the vintage and the aging potential of the grape/region/producer.\n"
+    "  If it should be held, say until roughly which year (e.g. 'כדאי לשמור עד ~2028').\n"
+    "  If ready, say so ('מוכן לשתייה 🍷'). For white/rose/sparkling also give the serving\n"
+    "  temperature (e.g. 'להגשה מצוננת 7-9°C, מוכן לשתייה'). If vintage is NV, treat as ready.\n"
+    "- drinking_window (חלון שתייה): the estimated optimal drinking-year range, e.g.\n"
+    "  '2026-2032'. For an immediate-drinking wine give a near window from the current year.\n"
+    "  Use null only if you genuinely cannot estimate.\n"
+    "\nNever invent a FACT that is not on the label. Missing/unknown FACT values must be null.\n"
+    "Output the JSON array and nothing else."
 )
 
 

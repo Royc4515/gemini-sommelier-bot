@@ -88,7 +88,9 @@ class WineInventory:
                 f"{i}. {winery} — {wine_name}\n"
                 f"   Vintage: {vintage} | Grapes: {grapes}\n"
                 f"   Status: {status} | Purpose: {purpose}\n"
-                f"   Recommendation: {opening_rec}"
+                # reason: label with the sheet's Hebrew column name so the model
+                # maps it to the "strictly enforce המלצת פתיחה" system instruction.
+                f"   המלצת פתיחה: {opening_rec}"
             )
 
         return "\n\n".join(lines)

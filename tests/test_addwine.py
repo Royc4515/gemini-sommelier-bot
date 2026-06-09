@@ -161,12 +161,28 @@ class RecordBuildingTests(unittest.TestCase):
         self.assertEqual(_build_tasting_notes({}), "")
 
     def test_build_record_defaults(self):
+        # With no model judgment, the deterministic fallbacks fill in.
         rec = _build_record({"winery": "Tzora", "wine_name": "Judean Hills",
                              "type": "אדום"})
         self.assertEqual(rec["quantity"], 1)
         self.assertEqual(rec["price"], "")
-        self.assertEqual(rec["opening_recommendation"], "Ready to Drink 🍷")
+        self.assertEqual(rec["opening_recommendation"], "Ready to Drink 🍷")  # fallback
+        self.assertEqual(rec["purpose"], "")
         self.assertTrue(rec["purchase_date"])  # today, populated
+
+    def test_build_record_uses_model_judgment(self):
+        # The model's reasoned suggestions win over the deterministic fallbacks.
+        rec = _build_record({
+            "wine_name": "Grand Vin", "type": "אדום", "vintage": "2019",
+            "purpose": "יין לשמירה ולהזדמנות",
+            "tasting_notes": "צפוי: גוף מלא, טאנינים מוצקים",
+            "opening_recommendation": "כדאי לשמור עד ~2028",
+            "drinking_window": "2025-2032",
+        })
+        self.assertEqual(rec["purpose"], "יין לשמירה ולהזדמנות")
+        self.assertEqual(rec["tasting_notes"], "צפוי: גוף מלא, טאנינים מוצקים")
+        self.assertEqual(rec["opening_recommendation"], "כדאי לשמור עד ~2028")
+        self.assertEqual(rec["drinking_window"], "2025-2032")
 
     def test_vintage_defaults_to_nv(self):
         rec = _build_record({"wine_name": "X"})
@@ -206,6 +222,13 @@ class ApplyFillTests(unittest.TestCase):
         records = [_build_record({"wine_name": "X"})]
         _apply_fill(records, "חלון שתייה: 2027-2030")
         self.assertEqual(records[0]["drinking_window"], "2027-2030")
+
+    def test_can_edit_ai_suggested_fields(self):
+        # The bot's own suggestions (opening rec, tasting notes) are editable too.
+        records = [_build_record({"wine_name": "X", "type": "אדום"})]
+        _apply_fill(records, "המלצת פתיחה: מוכן לשתייה, הערות: צפוי קליל")
+        self.assertEqual(records[0]["opening_recommendation"], "מוכן לשתייה")
+        self.assertEqual(records[0]["tasting_notes"], "צפוי קליל")
 
     def test_quantity_must_be_numeric(self):
         records = [_build_record({"wine_name": "X"})]
