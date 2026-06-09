@@ -20,8 +20,10 @@
  *   - The source tab was matched only by the name "Active Cellar"; we now fall
  *     back to the winery-header marker so a renamed tab still works.
  *   - copyTo() dragged the cellar's live formulas (O/P/Q) into Archive, where
- *     their relative references recompute to garbage. We keep the formatting but
- *     write a frozen snapshot of the computed values instead.
+ *     their relative references recompute to garbage (e.g. a mangled "3Finished"
+ *     cell). We copy the full look (formatting + dropdown chips) but then
+ *     overwrite with a frozen snapshot of the computed values, keeping each row
+ *     aligned column-for-column with the header.
  *   - A missing Archive tab popped a getUi().alert(), which throws in a trigger
  *     with no open UI and aborts the whole run. We auto-create the tab instead.
  */
@@ -67,31 +69,48 @@ function onEdit(e) {
 function _archiveRow(sheet, row) {
   var ss = sheet.getParent();
   var width = sheet.getLastColumn();
+  var archive = _ensureArchive(ss, sheet, width);
 
-  var archive = ss.getSheetByName(ARCHIVE_SHEET_NAME);
-  if (!archive) {
-    archive = ss.insertSheet(ARCHIVE_SHEET_NAME);
-  }
-  // A trimmed Archive tab (empty columns deleted) is narrower than the cellar,
-  // which makes copyTo/setValues throw "destination exceeds sheet size". Grow
-  // the grid to fit before writing.
-  if (archive.getMaxColumns() < width) {
-    archive.insertColumnsAfter(archive.getMaxColumns(), width - archive.getMaxColumns());
-  }
-  if (archive.getLastRow() === 0) {
-    archive.getRange(1, 1, 1, width).setValues(sheet.getRange(1, 1, 1, width).getValues());
+  // Grow the row count if the Archive grid is too short (copyTo/setValues
+  // cannot write past the sheet's physical edge — appendRow could, but it
+  // does not carry formatting, which is what caused misaligned rows before).
+  var destRow = Math.max(2, archive.getLastRow() + 1);
+  if (archive.getMaxRows() < destRow) {
+    archive.insertRowsAfter(archive.getMaxRows(), destRow - archive.getMaxRows());
   }
 
   var source = sheet.getRange(row, 1, 1, width);
   var values = source.getValues();              // snapshot BEFORE deleting.
+  var dest = archive.getRange(destRow, 1, 1, width);
 
-  // appendRow auto-extends the row count (copyTo/setValues do not), so use it
-  // to write the frozen values, then copy formatting onto the row it created.
-  archive.appendRow(values[0]);
-  var destRow = archive.getLastRow();
-  source.copyTo(archive.getRange(destRow, 1, 1, width), { formatOnly: true });
+  // Full copyTo carries formatting AND the data-validation dropdown chips, so
+  // the Archive matches the cellar's look. setValues then overwrites with the
+  // computed values, freezing them and stripping the cellar's live formulas
+  // (which would otherwise recompute against Archive cells -> garbage like
+  // "3Finished"). Column-for-column copy keeps every row aligned to the header.
+  source.copyTo(dest);
+  dest.setValues(values);
 
   sheet.deleteRow(row);
+}
+
+
+function _ensureArchive(ss, cellar, width) {
+  var archive = ss.getSheetByName(ARCHIVE_SHEET_NAME);
+  if (!archive) archive = ss.insertSheet(ARCHIVE_SHEET_NAME);
+
+  // A trimmed Archive tab (empty columns deleted) is narrower than the cellar,
+  // which makes copyTo/setValues throw "destination exceeds sheet size".
+  if (archive.getMaxColumns() < width) {
+    archive.insertColumnsAfter(archive.getMaxColumns(), width - archive.getMaxColumns());
+  }
+  // Seed the header (matching the cellar's look) on first use.
+  if (archive.getLastRow() === 0) {
+    var header = cellar.getRange(1, 1, 1, width);
+    header.copyTo(archive.getRange(1, 1, 1, width));
+    archive.getRange(1, 1, 1, width).setValues(header.getValues());
+  }
+  return archive;
 }
 
 
