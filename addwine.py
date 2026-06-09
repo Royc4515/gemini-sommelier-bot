@@ -110,9 +110,14 @@ class _Backend:
         # state=null tells the Apps Script to delete the row.
         self._post({"action": "addwine_state", "chat_id": chat_id, "state": None})
 
-    def append_rows(self, rows: list[list]) -> dict:
-        """Append wine rows (A-N) to the cellar. Raises on failure."""
-        result = self._post({"action": "add_wine", "rows": rows})
+    def append_rows(self, rows: list[list], status: str = "Closed") -> dict:
+        """Append wine rows (A-N) to the cellar. Raises on failure.
+
+        *status* is written to the named status column ("סטטוס חדש", which lives
+        outside A-N) for each new row, so a freshly added bottle defaults to
+        Closed (unopened).
+        """
+        result = self._post({"action": "add_wine", "rows": rows, "status": status})
         if result.get("status") != "success":
             raise RuntimeError(f"Cellar append failed: {result}")
         return result
