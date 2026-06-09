@@ -26,8 +26,28 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 
 - **Serverless Execution**: Deployed on Vercel Serverless Functions via Telegram Webhooks. No active polling or persistent compute.
 - **Dynamic Inventory Sync**: Live queries to Google Sheets. Explicitly respects "Open" vs. "Closed" bottle statuses for routing recommendations.
+- **Wine Auto-Ingestion (`/addwine`)**: Add bottles by sending front + back label photos (fused in one multimodal call) or a free-text description of one or more wines. The bot extracts the data, shows a confirmation with inline buttons, and on approval appends one row per wine to the cellar.
 - **Resilient AI Pipeline**: Integrates the `google-genai` SDK with an automatic fallback chain (`gemini-3.1-flash-lite` → `gemma-4-31b` → `gemini-2.5-flash`) and exponential backoff to mitigate transient API errors.
 - **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via the system instructions within `sommelier_ai.py`.
+
+---
+
+## 🍷 Adding Wines (`/addwine`)
+
+`/addwine` starts a short stateful conversation:
+
+1. `/addwine` - the bot asks for a front photo or a text description.
+2. **Photo path**: send the front label, then the back label. The bot downloads both and reads them in a single multimodal call.
+3. **Text path**: send a description instead (e.g. "Flam Classico 2021, Judean Hills, 14%"). One message may list several wines.
+4. The bot shows a confirmation with the parsed fields, the blank manual fields (price / store / purpose / drinking window), and `✅ אישור` / `❌ ביטול` buttons.
+5. Reply with a forgiving line to fill blanks before writing, e.g. `מחיר: 69, חנות: אינטרנט, ייעוד: שבת`. For multiple wines, prefix an index: `2: מחיר 80`.
+6. Tap **אישור** to append. `/cancel` aborts at any point.
+
+The bot writes only columns A-N. Columns O/P/Q (inventory value formula, status, sort) are managed manually.
+
+> **Write mechanism / no second auth path.** The bot reads the cellar via a public CSV export URL and has no writable Google client. Writes (and the `/addwine` conversation state) go through the **same Apps Script Web App** already used for chat memory (`SHEETS_MEMORY_URL`), which executes as the sheet owner. After editing `apps_script.js`, paste it into the bound script (Extensions → Apps Script), confirm `CELLAR_FILE_ID`, and **redeploy the existing Web App version** so the URL stays the same.
+>
+> **Column O edge case.** If column O holds per-row `=G*H` formulas, a newly appended row leaves O blank. Convert O to a single `ARRAYFORMULA` at the header so new rows auto-compute. The `inspect_o` action in the Apps Script reports which style is in use; `ping_write` verifies Editor access with a self-cleaning test write.
 
 ---
 

@@ -12,6 +12,7 @@ import sys
 # Allow imports from the project root (one level up from api/)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from addwine import AddWine               # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
@@ -48,19 +49,27 @@ def application(environ, start_response):
     except (json.JSONDecodeError, ValueError):
         return _respond("400 Bad Request", "Bad Request")
 
+    allowed_user_id = os.environ.get("ALLOWED_USER_ID", "")
+
+    # --- Inline-button taps (used by the /addwine confirmation) ---
+    callback = update.get("callback_query")
+    if callback:
+        cb_chat_id = callback.get("message", {}).get("chat", {}).get("id")
+        if allowed_user_id and str(cb_chat_id) != allowed_user_id:
+            return _respond("200 OK", "OK — unauthorized user")
+        try:
+            AddWine().handle_callback(callback)
+        except Exception:
+            pass
+        return _respond("200 OK", "OK")
+
     # --- Extract message ---
     message = update.get("message")
     if not message:
         return _respond("200 OK", "OK — no message")
 
-    # --- Safety: ignore non-text messages ---
-    text = message.get("text")
-    if not text:
-        return _respond("200 OK", "OK — non-text ignored")
-
     # --- Authorization: restrict to allowed user ---
     chat_id = message["chat"]["id"]
-    allowed_user_id = os.environ.get("ALLOWED_USER_ID", "")
     if allowed_user_id and str(chat_id) != allowed_user_id:
         try:
             TelegramClient().send_message(
@@ -70,6 +79,25 @@ def application(environ, start_response):
         except Exception:
             pass
         return _respond("200 OK", "OK — unauthorized user")
+
+    # --- /addwine ingestion flow (commands, photos, in-flow text) ---
+    # Runs before the non-text guard so it can receive label photos. Returns
+    # True only when the update belongs to an active flow (or starts one), so
+    # ordinary sommelier messages fall through untouched.
+    try:
+        if AddWine().handle_message(str(chat_id), message):
+            return _respond("200 OK", "OK")
+    except Exception as exc:
+        try:
+            TelegramClient().send_message(chat_id=chat_id, text=f"⚠️ שגיאה ב-/addwine: {exc}")
+        except Exception:
+            pass
+        return _respond("200 OK", "OK")
+
+    # --- Safety: ignore non-text messages ---
+    text = message.get("text")
+    if not text:
+        return _respond("200 OK", "OK — non-text ignored")
 
     # ---- Handle bot commands (/reset, /start) ----
     stripped = text.strip()

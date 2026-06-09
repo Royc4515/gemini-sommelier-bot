@@ -5,7 +5,9 @@ Wraps the Google GenAI (gemini-2.5-flash) client with domain-specific
 system instructions for the Wine Sommelier persona.
 """
 
+import json
 import os
+import re
 import sys
 import time
 
@@ -46,6 +48,38 @@ _SUMMARIZER_SYSTEM = (
     "You are a concise summarizer. "
     "When given a prompt and text, produce only the requested summary — "
     "no preamble, no explanation, just the bullet points."
+)
+
+# ------------------------------------------------------------------
+# /addwine extraction prompt
+# ------------------------------------------------------------------
+# The keys the model must return per wine. The bot maps these to sheet columns;
+# values the bot fills itself (quantity, dates, recommendation) are NOT here.
+_WINE_KEYS = (
+    "winery", "wine_name", "type", "vintage", "grape_blend",
+    "region", "abv", "aging", "mevushal", "filtered",
+)
+
+_EXTRACTION_PROMPT = (
+    "You extract structured wine-cellar data from wine labels or a text description.\n"
+    "Return ONLY a JSON array. Each element is one wine, an object with EXACTLY these keys:\n"
+    '  winery, wine_name, type, vintage, grape_blend, region, abv, aging, mevushal, filtered\n'
+    "Rules:\n"
+    "- winery, wine_name: from the FRONT label (or the description). Keep the label's own\n"
+    "  language. If it is in Latin script, ALSO give a Hebrew transliteration formatted as\n"
+    '  "English (עברית)", e.g. "Villa Cape (וילה קייפ)".\n'
+    "- type: normalize to EXACTLY one of אדום (red) / לבן (white) / רוזה (rose) / מבעבע\n"
+    "  (sparkling). Infer from grape/color if not stated.\n"
+    '- vintage: TEXT, not a number. If no year, return "NV". "NV/2025" is also valid.\n'
+    "- grape_blend: ONLY if printed/stated. If absent, return null. Do NOT guess a blend.\n"
+    "- region: use the known Hebrew name if one exists, otherwise as printed.\n"
+    "- abv: alcohol percentage from the BACK label/text (e.g. \"13.5%\"), else null.\n"
+    "- aging: factual aging statement only (e.g. \"10 months in oak\"), else null.\n"
+    "- mevushal: \"yes\"/\"no\" if stated (kosher mevushal), else null.\n"
+    "- filtered: factual statement only (e.g. \"unfiltered\"), else null.\n"
+    "HARD RULE: never invent subjective tasting/aroma/flavor notes. The bottle is\n"
+    "unopened; fabricated tasting notes are fake data. Report label/described FACTS only.\n"
+    "Missing or unknown values must be null. Output the JSON array and nothing else."
 )
 
 
@@ -117,6 +151,56 @@ class SommelierAI:
         )
 
     # ------------------------------------------------------------------
+    # Public: /addwine extraction (multimodal or text)
+    # ------------------------------------------------------------------
+
+    def extract_wines_from_images(
+        self,
+        front_bytes: bytes,
+        front_mime: str,
+        back_bytes: bytes,
+        back_mime: str,
+    ) -> list[dict]:
+        """Fuse a front + back label in ONE call and return [wine] (length 1)."""
+        # reason: both images in a single call so the model cross-references front
+        # (name/winery) and back (region/abv/aging) instead of guessing per image.
+        contents = [
+            _EXTRACTION_PROMPT,
+            types.Part.from_bytes(data=front_bytes, mime_type=front_mime),
+            types.Part.from_bytes(data=back_bytes, mime_type=back_mime),
+        ]
+        return self._extract(contents)
+
+    def extract_wines_from_text(self, description: str) -> list[dict]:
+        """Extract one or more wines from a free-text description."""
+        contents = [_EXTRACTION_PROMPT, f"Wine description(s):\n{description}"]
+        return self._extract(contents)
+
+    def _extract(self, contents: list) -> list[dict]:
+        """Run extraction through the fallback chain and parse defensively."""
+        raw = self._call_with_retry(
+            lambda model_name: self._generate_json(model_name, contents)
+        )
+        return _parse_wine_json(raw)
+
+    def _generate_json(self, model_name: str, contents: list) -> str:
+        """generate_content asking for JSON. Drops JSON-mode on models that lack it."""
+        # reason: gemma fallback models don't support response_mime_type; forcing it
+        # would raise and abort the append. The prompt already demands a JSON array,
+        # and _parse_wine_json strips fences, so plain text from gemma still works.
+        if model_name.startswith("gemma"):
+            config = None
+        else:
+            config = types.GenerateContentConfig(response_mime_type="application/json")
+
+        response = self.client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+        return response.text or "[]"
+
+    # ------------------------------------------------------------------
     # Private: API calls
     # ------------------------------------------------------------------
 
@@ -170,3 +254,51 @@ class SommelierAI:
                         continue
                     raise
         raise RuntimeError("All fallback models exhausted due to quota/rate limits.") from last_error
+
+
+# ----------------------------------------------------------------------
+# Defensive JSON parsing for /addwine extraction
+# ----------------------------------------------------------------------
+
+def _parse_wine_json(raw: str) -> list[dict]:
+    """Parse the model's response into a list of normalized wine dicts.
+
+    Tolerant by design: a fallback model may wrap JSON in ```json fences or emit
+    a single object instead of an array. A response we cannot parse yields [] so
+    the caller can ask the user to retry rather than crashing the append.
+    """
+    if not raw or not raw.strip():
+        return []
+
+    text = raw.strip()
+    # Strip ```json ... ``` (or plain ```) fences a non-JSON-mode model may add.
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        # reason: a fallback model (gemma) may wrap the JSON in prose like
+        # "Here is the JSON: [...]". Salvage the first array/object substring
+        # rather than discarding an otherwise-valid extraction.
+        match = re.search(r"(\[.*\]|\{.*\})", text, flags=re.DOTALL)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+    if isinstance(data, dict):
+        data = [data]  # single wine returned bare -> wrap
+    if not isinstance(data, list):
+        return []
+
+    wines: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        # Keep only known keys; fill any missing key with None.
+        wines.append({key: item.get(key) for key in _WINE_KEYS})
+    return wines
