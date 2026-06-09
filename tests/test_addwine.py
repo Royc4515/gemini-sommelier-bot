@@ -118,6 +118,13 @@ class ParseWineJsonTests(unittest.TestCase):
         # A fallback model that ignores JSON must not crash the caller.
         self.assertEqual(_parse_wine_json("I could not read the label."), [])
 
+    def test_salvages_json_with_preamble(self):
+        # A fallback model may wrap the array in prose; salvage the array.
+        raw = 'Sure! Here is the JSON:\n[{"wine_name": "Salvaged"}]\nHope that helps.'
+        wines = _parse_wine_json(raw)
+        self.assertEqual(len(wines), 1)
+        self.assertEqual(wines[0]["wine_name"], "Salvaged")
+
     def test_empty_input(self):
         self.assertEqual(_parse_wine_json(""), [])
 
@@ -293,6 +300,15 @@ class FlowTests(unittest.TestCase):
         flow = _make_flow()
         flow.handle_message("42", {"text": "/addwine"})
         flow.handle_message("42", {"text": "/cancel"})
+        self.assertNotIn("42", flow.backend.state)
+
+    def test_other_command_escapes_flow(self):
+        # A /reset mid-flow must drop the flow and fall through (return False),
+        # not be mis-read as a wine description.
+        flow = _make_flow()
+        flow.handle_message("42", {"text": "/addwine"})
+        consumed = flow.handle_message("42", {"text": "/reset"})
+        self.assertFalse(consumed)
         self.assertNotIn("42", flow.backend.state)
 
     def _drive_to_confirm(self, flow):

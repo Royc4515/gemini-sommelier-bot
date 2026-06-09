@@ -279,7 +279,16 @@ def _parse_wine_json(raw: str) -> list[dict]:
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        return []
+        # reason: a fallback model (gemma) may wrap the JSON in prose like
+        # "Here is the JSON: [...]". Salvage the first array/object substring
+        # rather than discarding an otherwise-valid extraction.
+        match = re.search(r"(\[.*\]|\{.*\})", text, flags=re.DOTALL)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return []
 
     if isinstance(data, dict):
         data = [data]  # single wine returned bare -> wrap

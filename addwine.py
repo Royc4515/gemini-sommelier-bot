@@ -149,6 +149,13 @@ class AddWine:
             self.telegram.send_message(chat_id, "בוטל. לא נוסף יין.")
             return True
 
+        # reason: any OTHER slash-command (/reset, /start, ...) must escape the
+        # flow instead of being mis-read as a wine description or fill line. Drop
+        # the half-finished state and let the normal handler run the command.
+        if text.startswith("/"):
+            self.backend.clear_state(chat_id)
+            return False
+
         photos = message.get("photo")
         if photos:
             # Telegram sends multiple sizes; the last is the highest resolution.
