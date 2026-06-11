@@ -34,7 +34,7 @@ from editwine import (
     _render_list,
     _EDIT_LABELS,
 )
-from addwine import _ROW_ORDER, _apply_fill
+from cellar import apply_fill as _apply_fill, ROW_ORDER as _ROW_ORDER
 
 
 # ----------------------------------------------------------------------

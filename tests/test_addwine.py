@@ -32,12 +32,12 @@ from addwine import (
     AddWine,
     _apply_fill,
     _build_record,
-    _build_row,
     _build_tasting_notes,
     _opening_recommendation,
     _render_confirmation,
-    _ROW_ORDER,
 )
+# build_row / ROW_ORDER now live in the shared cellar layer.
+from cellar import build_row as _build_row, ROW_ORDER as _ROW_ORDER
 from sommelier_ai import _parse_wine_json
 
 

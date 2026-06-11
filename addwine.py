@@ -9,33 +9,26 @@ Two input modes share the back half of the flow:
   * Photos: front + back of one bottle, fused in a single multimodal call.
   * Text:   a free-text description that may list several wines -> one row each.
 
-State is persisted in the SAME Apps Script Web App used for chat memory
-(SHEETS_MEMORY_URL, action="addwine_state"); a serverless webhook has no usable
-in-memory state because every invocation is a cold start. The cellar append goes
-through the same Web App (action="add_wine"), so there is no second auth path.
+Persistence (conversation state + the cellar append) goes through the shared
+cellar.CellarBackend, so there is no second auth path and no in-memory state to
+lose across serverless cold starts.
 """
 
-import json
-import os
-import re
 import sys
-import time
-import urllib.parse
-import urllib.request
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from cellar import (
+    CellarBackend,
+    SHEET_LINK,
+    apply_fill,
+    build_row,
+    display_name,
+)
 from sommelier_ai import SommelierAI
 from telegram_client import TelegramClient
 
-
-# The cellar spreadsheet. Configurable, but defaults to Roy's sheet so the bot
-# works without an extra env var. The Apps Script holds the authoritative copy.
-CELLAR_FILE_ID = os.environ.get(
-    "CELLAR_FILE_ID", "1xMwKiTr7JZ__vcLBKQrUTR8it__dQVCnHfd9k3_wZxo"
-)
-_SHEET_LINK = f"https://docs.google.com/spreadsheets/d/{CELLAR_FILE_ID}"
 
 _TZ = ZoneInfo("Asia/Jerusalem")  # purchase_date is "today" in Roy's timezone.
 
@@ -62,116 +55,6 @@ _FILL_LABELS = (
 
 
 # ======================================================================
-# State + cellar persistence (Apps Script webhook, reused from chat memory)
-# ======================================================================
-
-class _Backend:
-    """Thin client over the shared Apps Script Web App."""
-
-    TTL_SEC = 1800  # 30 min: abandon stale half-finished flows.
-    _TIMEOUT = 8    # generous: extraction-free, but Apps Script can be slow.
-
-    def __init__(self):
-        self._url = os.environ.get("SHEETS_MEMORY_URL", "").strip()
-        # Shared secret gating the Apps Script Web App (see apps_script.js).
-        self._secret = os.environ.get("SHEETS_SECRET", "").strip()
-
-    @property
-    def configured(self) -> bool:
-        return bool(self._url)
-
-    def get_state(self, chat_id: str) -> dict | None:
-        """Return the live state dict, or None if absent/expired."""
-        if not self._url:
-            return None
-        try:
-            url = f"{self._url}?action=addwine_state&chat_id={chat_id}"
-            if self._secret:
-                url += f"&key={urllib.parse.quote(self._secret)}"
-            with urllib.request.urlopen(url, timeout=self._TIMEOUT) as resp:
-                doc = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return None
-
-        state = doc.get("state")
-        if not state:
-            return None
-        # reason: a crashed/abandoned flow must not trap the user forever; expire it.
-        if (time.time() - float(doc.get("updated_at") or 0)) > self.TTL_SEC:
-            self.clear_state(chat_id)
-            return None
-        return state
-
-    def set_state(self, chat_id: str, state: dict) -> None:
-        self._post({"action": "addwine_state", "chat_id": chat_id,
-                    "state": state, "updated_at": time.time()})
-
-    def clear_state(self, chat_id: str) -> None:
-        # state=null tells the Apps Script to delete the row.
-        self._post({"action": "addwine_state", "chat_id": chat_id, "state": None})
-
-    def append_rows(self, rows: list[list], status: str = "Closed") -> dict:
-        """Append wine rows (A-N) to the cellar. Raises on failure.
-
-        *status* is written to the named status column ("סטטוס חדש", which lives
-        outside A-N) for each new row, so a freshly added bottle defaults to
-        Closed (unopened).
-        """
-        result = self._post({"action": "add_wine", "rows": rows, "status": status})
-        if result.get("status") != "success":
-            raise RuntimeError(f"Cellar append failed: {result}")
-        return result
-
-    def list_wines(self) -> list[dict]:
-        """Return every cellar row that holds a wine, with its sheet row index.
-
-        Each item is ``{"row": <1-indexed sheet row>, "values": [A..N],
-        "status": <status cell>}``. Used by /editwine to let the user pick a
-        bottle and edit it in place (the row index is the unambiguous handle).
-        Returns [] if the backend is unconfigured or the call fails.
-        """
-        if not self._url:
-            return []
-        try:
-            url = f"{self._url}?action=list_wines"
-            if self._secret:
-                url += f"&key={urllib.parse.quote(self._secret)}"
-            with urllib.request.urlopen(url, timeout=self._TIMEOUT) as resp:
-                doc = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            sys.stderr.write(f"ERROR: list_wines failed: {exc}\n")
-            return []
-        return doc.get("wines") or []
-
-    def update_wine(self, row: int, values: list, expect: dict) -> dict:
-        """Overwrite columns A-N of *row* with *values*. Raises on failure.
-
-        *expect* carries the wine's original identity (winery + wine_name); the
-        Apps Script verifies it still matches that row before writing, so a row
-        that shifted between listing and confirmation is refused instead of
-        clobbering the wrong bottle.
-        """
-        result = self._post({
-            "action": "update_wine", "row": row, "values": values, "expect": expect,
-        })
-        if result.get("status") != "success":
-            raise RuntimeError(f"Cellar update failed: {result}")
-        return result
-
-    def _post(self, payload: dict) -> dict:
-        if self._secret:
-            payload = {**payload, "key": self._secret}
-        req = urllib.request.Request(
-            self._url,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=self._TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-
-# ======================================================================
 # Flow controller
 # ======================================================================
 
@@ -180,7 +63,7 @@ class AddWine:
     the update so the webhook can stop and respond 200."""
 
     def __init__(self):
-        self.backend = _Backend()
+        self.backend = CellarBackend()
         self.telegram = TelegramClient()
 
     # ---- entry points called by the webhook -------------------------------
@@ -361,7 +244,7 @@ class AddWine:
         self.backend.clear_state(chat_id)
         self._disable_buttons(chat_id, message_id)
 
-        rows = [_build_row(r) for r in state["wines"]]
+        rows = [build_row(r) for r in state["wines"]]
         try:
             result = self.backend.append_rows(rows)
         except Exception as exc:
@@ -370,12 +253,12 @@ class AddWine:
             return
 
         count = result.get("rows_written", len(rows))
-        names = ", ".join(_display_name(r) for r in state["wines"])
+        names = ", ".join(display_name(r) for r in state["wines"])
         self.telegram.send_message(
             chat_id,
-            f"✅ נוספו {count} יינות למרתף: {names}\n{_SHEET_LINK}"
+            f"✅ נוספו {count} יינות למרתף: {names}\n{SHEET_LINK}"
             if count != 1 else
-            f"✅ נוסף למרתף: {names}\n{_SHEET_LINK}",
+            f"✅ נוסף למרתף: {names}\n{SHEET_LINK}",
         )
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
@@ -441,31 +324,13 @@ def _build_record(wine: dict) -> dict:
     }
 
 
-# Sheet columns A-N, in exact order. The bot NEVER writes O/P/Q.
-_ROW_ORDER = (
-    "winery", "wine_name", "type", "vintage", "grape_blend", "region",
-    "quantity", "price", "store", "purchase_date", "purpose",
-    "drinking_window", "opening_recommendation", "tasting_notes",
-)
-
-
-def _build_row(record: dict) -> list:
-    return [record.get(key, "") for key in _ROW_ORDER]
-
-
-def _display_name(record: dict) -> str:
-    name = record.get("wine_name") or "(ללא שם)"
-    winery = record.get("winery")
-    return f"{winery} - {name}" if winery else name
-
-
 def _render_confirmation(records: list[dict]) -> str:
     multi = len(records) > 1
     blocks: list[str] = []
     for i, r in enumerate(records, start=1):
         prefix = f"**{i}.** " if multi else ""
         blocks.append(
-            f"🍷 {prefix}{_display_name(r)}\n"
+            f"🍷 {prefix}{display_name(r)}\n"
             f"סוג: {r['type'] or '-'} | בציר: {r['vintage'] or '-'}\n"
             f"זן/בלנד: {r['grape_blend'] or '-'}\n"
             f"אזור: {r['region'] or '-'}\n"
@@ -496,54 +361,10 @@ def _confirm_keyboard(token: str) -> dict:
     }
 
 
-# ======================================================================
-# Lenient blank-field fill parser
-# ======================================================================
-
-def _match_label(token: str, labels: tuple = _FILL_LABELS) -> tuple[str | None, str]:
-    """Return (record_key, value) if *token* starts with a known label, else (None, '').
-
-    *labels* is the (label, key) prefix table to match against; /editwine passes
-    a wider one so the label-fact fields (winery, region, ...) are editable too.
-    """
-    for label, key in labels:
-        if token.startswith(label):
-            value = token[len(label):].lstrip(" :\t")
-            return key, value.strip()
-    return None, ""
-
-
 def _apply_fill(records: list[dict], text: str, labels: tuple = _FILL_LABELS) -> None:
-    """Parse a forgiving line like 'מחיר: 69, חנות: אינטרנט' into *records* in place.
+    """Fill the manual blank fields from a forgiving line.
 
-    With multiple wines, a token may carry a leading '2:' to target one wine;
-    otherwise the value applies to all. Unparsed tokens are ignored.
-    *labels* selects which fields are fillable (see _match_label).
+    Thin convenience over cellar.apply_fill that defaults to the add-flow's
+    label table (the manual blanks); /addwine never needs another set.
     """
-    multi = len(records) > 1
-    for raw in re.split(r"[,\n]", text):
-        token = raw.strip()
-        if not token:
-            continue
-
-        target = None
-        if multi:
-            m = re.match(r"^(\d+)\s*[:.)]\s*(.+)$", token)
-            if m:
-                target = int(m.group(1)) - 1  # 1-based for the user.
-                token = m.group(2).strip()
-
-        key, value = _match_label(token, labels)
-        if not key or value == "":
-            continue
-        if key == "quantity":
-            if not value.isdigit():
-                continue
-            value = int(value)
-
-        if target is not None:
-            if 0 <= target < len(records):
-                records[target][key] = value
-        else:
-            for r in records:
-                r[key] = value
+    apply_fill(records, text, labels)

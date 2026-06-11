@@ -14,9 +14,9 @@ cellar Google Sheet:
     only here every A-N field is editable, not just the manual blanks.
   * WRITE: on confirm, columns A-N of that exact sheet row are overwritten.
 
-It reuses the shared Apps Script Web App backend (SHEETS_MEMORY_URL) and several
-pure helpers from addwine.py, so there is no second auth path and the column
-ordering / rendering stays consistent with the add flow.
+It reuses the shared cellar layer (cellar.CellarBackend + column model), so there
+is no second auth path and the column ordering / rendering stays consistent with
+the add flow.
 
 State is persisted under a namespaced key ("edit:<chat_id>") in the SAME KV tab
 addwine uses, so the two flows never collide and a serverless cold start can
@@ -26,17 +26,15 @@ resume mid-edit.
 import sys
 import uuid
 
-from addwine import (
-    _Backend,
-    _ROW_ORDER,
-    _apply_fill,
-    _build_row,
-    _display_name,
+from cellar import (
+    CellarBackend,
+    ROW_ORDER,
+    SHEET_LINK,
+    apply_fill,
+    build_row,
+    display_name,
 )
 from telegram_client import TelegramClient
-
-# Reuse the cellar link the add flow exposes.
-from addwine import _SHEET_LINK
 
 
 # Conversation states.
@@ -103,7 +101,7 @@ class EditWine:
     the update so the webhook can stop and respond 200."""
 
     def __init__(self):
-        self.backend = _Backend()
+        self.backend = CellarBackend()
         self.telegram = TelegramClient()
 
     # ---- entry points called by the webhook -------------------------------
@@ -231,7 +229,7 @@ class EditWine:
         needle = text.casefold()
         shown = [
             i for i, e in enumerate(entries)
-            if needle in _display_name(e["rec"]).casefold()
+            if needle in display_name(e["rec"]).casefold()
         ]
         if not shown:
             self.telegram.send_message(
@@ -244,7 +242,7 @@ class EditWine:
 
     def _on_edit(self, chat_id: str, state: dict, text: str) -> None:
         records = [state["rec"]]
-        _apply_fill(records, text, _EDIT_LABELS)
+        apply_fill(records, text, _EDIT_LABELS)
         state["rec"] = records[0]
         self.backend.set_state(self._key(chat_id), state)
         self.telegram.send_message(
@@ -271,7 +269,7 @@ class EditWine:
         self._disable_buttons(chat_id, message_id)
 
         rec = state["rec"]
-        row = _build_row(rec)
+        row = build_row(rec)
         try:
             self.backend.update_wine(
                 state["row"], row,
@@ -287,7 +285,7 @@ class EditWine:
             return
 
         self.telegram.send_message(
-            chat_id, f"✅ עודכן: {_display_name(rec)}\n{_SHEET_LINK}",
+            chat_id, f"✅ עודכן: {display_name(rec)}\n{SHEET_LINK}",
         )
 
     # ---- helpers ----------------------------------------------------------
@@ -317,7 +315,7 @@ def _record_from_values(values: list) -> dict:
     Missing trailing cells become "" so every editable key is always present.
     """
     rec: dict = {}
-    for i, key in enumerate(_ROW_ORDER):
+    for i, key in enumerate(ROW_ORDER):
         val = values[i] if i < len(values) else ""
         rec[key] = "" if val is None else val
     return rec
@@ -330,7 +328,7 @@ def _render_list(entries: list[dict], shown: list[int]) -> str:
         rec = e["rec"]
         vintage = rec.get("vintage") or "-"
         status = e.get("status") or "-"
-        lines.append(f"{display_num}. {_display_name(rec)} ({vintage}) [{status}]")
+        lines.append(f"{display_num}. {display_name(rec)} ({vintage}) [{status}]")
     if len(shown) > _MAX_LIST:
         lines.append(f"\n...ועוד {len(shown) - _MAX_LIST}. סנן בעזרת מילה כדי לצמצם.")
     lines.append("\n/cancel לביטול.")
@@ -338,11 +336,11 @@ def _render_list(entries: list[dict], shown: list[int]) -> str:
 
 
 def _render_edit(rec: dict, status: str) -> str:
-    lines = [f"🍷 {_display_name(rec)}"]
+    lines = [f"🍷 {display_name(rec)}"]
     if status:
         lines.append(f"סטטוס: {status}")
     lines.append("- שדות (ריק = חסר, ניתן למלא/לתקן) -")
-    for key in _ROW_ORDER:
+    for key in ROW_ORDER:
         label = _FIELD_LABELS.get(key, key)
         value = rec.get(key)
         shown = value if (value or value == 0) else "(ריק)"
