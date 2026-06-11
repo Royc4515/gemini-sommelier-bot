@@ -34,7 +34,7 @@ from editwine import (
     _render_list,
     _EDIT_LABELS,
 )
-from addwine import _ROW_ORDER, _apply_fill
+from cellar import apply_fill as _apply_fill, ROW_ORDER as _ROW_ORDER
 
 
 # ----------------------------------------------------------------------
@@ -70,9 +70,13 @@ class FakeTelegram:
     def __init__(self):
         self.sent = []          # list of (text, reply_markup)
         self.disabled = []
+        self.actions = []       # chat actions sent
 
     def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((text, reply_markup))
+
+    def send_chat_action(self, chat_id, action="typing"):
+        self.actions.append(action)
 
     def answer_callback_query(self, *args, **kwargs):
         pass
@@ -291,6 +295,51 @@ class FlowTests(unittest.TestCase):
         })
         self.assertEqual(len(flow.backend.updated), 0)
         self.assertIn("אין מה לעדכן", flow.telegram.sent[-1][0])
+
+    def test_list_has_tap_to_select_buttons_when_small(self):
+        flow = _make_flow()
+        flow.handle_message("42", {"text": "/editwine"})
+        _text, markup = flow.telegram.sent[-1]
+        self.assertIsNotNone(markup)
+        datas = [b["callback_data"]
+                 for row in markup["inline_keyboard"] for b in row]
+        self.assertIn("editwine:pick:2", datas)
+        self.assertIn("editwine:pick:3", datas)
+
+    def test_no_buttons_when_view_too_large(self):
+        big = [{"row": r, "status": "Closed",
+                "values": [f"W{r}", f"N{r}"] + [""] * 12} for r in range(2, 25)]
+        flow = _make_flow(wines=big)
+        flow.handle_message("42", {"text": "/editwine"})
+        _text, markup = flow.telegram.sent[-1]
+        self.assertIsNone(markup)  # 23 wines > _PICK_MAX, fall back to numbers/filter
+
+    def test_pick_callback_enters_edit(self):
+        flow = _make_flow()
+        flow.handle_message("42", {"text": "/editwine"})
+        flow.handle_callback({
+            "id": "cq1", "data": "editwine:pick:3",
+            "message": {"chat": {"id": 42}, "message_id": 50},
+        })
+        st = flow.backend.state[self.KEY]
+        self.assertEqual(st["state"], editwine._EDIT)
+        self.assertEqual(st["row"], 3)
+        self.assertEqual(st["rec"]["winery"], "Tzora")
+        self.assertEqual(st["orig_wine_name"], "Judean Hills")
+
+    def test_pick_after_filter_then_confirm_writes_right_row(self):
+        flow = _make_flow()
+        flow.handle_message("42", {"text": "/editwine"})
+        flow.handle_message("42", {"text": "tzora"})  # narrow the view
+        _text, markup = flow.telegram.sent[-1]
+        datas = [b["callback_data"]
+                 for row in markup["inline_keyboard"] for b in row]
+        self.assertEqual(datas, ["editwine:pick:3"])  # only Tzora shown
+        flow.handle_callback({
+            "id": "cq2", "data": "editwine:pick:3",
+            "message": {"chat": {"id": 42}, "message_id": 60},
+        })
+        self.assertEqual(flow.backend.state[self.KEY]["row"], 3)
 
 
 if __name__ == "__main__":

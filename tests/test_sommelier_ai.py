@@ -145,12 +145,36 @@ class TestSommelierAI(unittest.TestCase):
     def test_exhaust_all_fallbacks(self):
         """Verify that a 429 on all models raises the final quota exhaustion exception."""
         self.mock_client.chats.create.side_effect = Exception("429 Quota Exceeded")
-        
+
         with patch("sys.stderr.write"):
             with self.assertRaisesRegex(RuntimeError, "All fallback models exhausted due to quota/rate limits"):
                 self.ai.ask("test", "test")
-                
+
         self.assertEqual(self.mock_client.chats.create.call_count, len(SommelierAI.FALLBACK_MODELS))
+
+    # ---- voice transcription --------------------------------------------
+
+    def test_transcribe_audio_returns_stripped_text(self):
+        mock_response = MagicMock()
+        mock_response.text = "  מה לשתות עם דג  "
+        self.mock_client.models.generate_content.return_value = mock_response
+
+        result = self.ai.transcribe_audio(b"audio-bytes", "audio/ogg")
+
+        self.assertEqual(result, "מה לשתות עם דג")
+        used_model = self.mock_client.models.generate_content.call_args[1]["model"]
+        self.assertFalse(used_model.startswith("gemma"))
+
+    def test_transcribe_audio_never_uses_gemma(self):
+        # gemma cannot take audio; the chain must skip it entirely, never call it.
+        self.mock_client.models.generate_content.side_effect = Exception("429 Quota Exceeded")
+        with patch("sys.stderr.write"):
+            with self.assertRaises(Exception):
+                self.ai.transcribe_audio(b"x", "audio/ogg")
+        models_used = [c[1]["model"]
+                       for c in self.mock_client.models.generate_content.call_args_list]
+        self.assertTrue(models_used)
+        self.assertFalse(any(m.startswith("gemma") for m in models_used))
 
 if __name__ == "__main__":
     unittest.main()

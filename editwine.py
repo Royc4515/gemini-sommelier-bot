@@ -14,9 +14,9 @@ cellar Google Sheet:
     only here every A-N field is editable, not just the manual blanks.
   * WRITE: on confirm, columns A-N of that exact sheet row are overwritten.
 
-It reuses the shared Apps Script Web App backend (SHEETS_MEMORY_URL) and several
-pure helpers from addwine.py, so there is no second auth path and the column
-ordering / rendering stays consistent with the add flow.
+It reuses the shared cellar layer (cellar.CellarBackend + column model), so there
+is no second auth path and the column ordering / rendering stays consistent with
+the add flow.
 
 State is persisted under a namespaced key ("edit:<chat_id>") in the SAME KV tab
 addwine uses, so the two flows never collide and a serverless cold start can
@@ -26,17 +26,15 @@ resume mid-edit.
 import sys
 import uuid
 
-from addwine import (
-    _Backend,
-    _ROW_ORDER,
-    _apply_fill,
-    _build_row,
-    _display_name,
+from cellar import (
+    CellarBackend,
+    ROW_ORDER,
+    SHEET_LINK,
+    apply_fill,
+    build_row,
+    display_name,
 )
 from telegram_client import TelegramClient
-
-# Reuse the cellar link the add flow exposes.
-from addwine import _SHEET_LINK
 
 
 # Conversation states.
@@ -96,6 +94,10 @@ _FIELD_LABELS = {
 
 # How many wines to show per list page (keeps the picker scannable).
 _MAX_LIST = 60
+# Only render tap-to-select buttons when the current view is this small;
+# otherwise a big cellar would produce an unwieldy keyboard (numbers/filter
+# still work). See spec 001 D3.
+_PICK_MAX = 12
 
 
 class EditWine:
@@ -103,7 +105,7 @@ class EditWine:
     the update so the webhook can stop and respond 200."""
 
     def __init__(self):
-        self.backend = _Backend()
+        self.backend = CellarBackend()
         self.telegram = TelegramClient()
 
     # ---- entry points called by the webhook -------------------------------
@@ -161,8 +163,13 @@ class EditWine:
             self.telegram.send_message(chat_id, "בוטל. היין לא עודכן.")
             return True
 
-        # editwine:confirm:<token>
         parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        if action == "pick":  # editwine:pick:<row> — tapped a wine in the list
+            self._pick(chat_id, state, parts[2] if len(parts) > 2 else "", message_id)
+            return True
+
+        # editwine:confirm:<token>
         token = parts[2] if len(parts) > 2 else ""
         self._confirm(chat_id, state, token, message_id)
         return True
@@ -176,7 +183,7 @@ class EditWine:
             )
             return
 
-        self.telegram.send_message(chat_id, "טוען את המרתף, רגע...")
+        self.telegram.send_chat_action(chat_id, "typing")
         wines = self.backend.list_wines()
         if not wines:
             self.telegram.send_message(
@@ -198,7 +205,10 @@ class EditWine:
         self.backend.set_state(self._key(chat_id), {
             "state": _AWAIT_SELECT, "flow": _FLOW, "wines": entries, "shown": shown,
         })
-        self.telegram.send_message(chat_id, _render_list(entries, shown))
+        self.telegram.send_message(
+            chat_id, _render_list(entries, shown),
+            reply_markup=_list_keyboard(entries, shown),
+        )
 
     def _on_select(self, chat_id: str, state: dict, text: str) -> None:
         entries = state["wines"]
@@ -209,29 +219,14 @@ class EditWine:
             if not (1 <= n <= len(shown)):
                 self.telegram.send_message(chat_id, "מספר לא תקין. בחר מהרשימה, או /cancel.")
                 return
-            entry = entries[shown[n - 1]]
-            rec = entry["rec"]
-            token = uuid.uuid4().hex
-            self.backend.set_state(self._key(chat_id), {
-                "state": _EDIT, "flow": _FLOW,
-                "row": entry["row"], "status": entry["status"], "rec": rec,
-                # Original identity guards against editing the wrong row if the
-                # sheet shifted between listing and write.
-                "orig_winery": rec.get("winery", ""),
-                "orig_wine_name": rec.get("wine_name", ""),
-                "token": token,
-            })
-            self.telegram.send_message(
-                chat_id, _render_edit(rec, entry["status"]),
-                reply_markup=_confirm_keyboard(token),
-            )
+            self._enter_edit(chat_id, entries[shown[n - 1]])
             return
 
         # Not a number -> treat as a filter and re-show the narrowed list.
         needle = text.casefold()
         shown = [
             i for i, e in enumerate(entries)
-            if needle in _display_name(e["rec"]).casefold()
+            if needle in display_name(e["rec"]).casefold()
         ]
         if not shown:
             self.telegram.send_message(
@@ -240,11 +235,50 @@ class EditWine:
             return
         state["shown"] = shown
         self.backend.set_state(self._key(chat_id), state)
-        self.telegram.send_message(chat_id, _render_list(entries, shown))
+        self.telegram.send_message(
+            chat_id, _render_list(entries, shown),
+            reply_markup=_list_keyboard(entries, shown),
+        )
+
+    def _pick(self, chat_id: str, state: dict | None, row_str: str,
+              message_id) -> None:
+        """Handle a tap on a wine button in the list (editwine:pick:<row>)."""
+        if not state or state.get("flow") != _FLOW or state.get("state") != _AWAIT_SELECT:
+            self._disable_buttons(chat_id, message_id)
+            self.telegram.send_message(chat_id, "הרשימה כבר לא פעילה. שלח /editwine כדי להתחיל.")
+            return
+        try:
+            row = int(row_str)
+        except ValueError:
+            return
+        entry = next((e for e in state["wines"] if e.get("row") == row), None)
+        if entry is None:
+            self.telegram.send_message(chat_id, "לא מצאתי את היין. שלח /editwine שוב.")
+            return
+        self._disable_buttons(chat_id, message_id)  # consume the list buttons
+        self._enter_edit(chat_id, entry)
+
+    def _enter_edit(self, chat_id: str, entry: dict) -> None:
+        """Move a chosen wine into the EDIT stage and show its fields."""
+        rec = entry["rec"]
+        token = uuid.uuid4().hex
+        self.backend.set_state(self._key(chat_id), {
+            "state": _EDIT, "flow": _FLOW,
+            "row": entry["row"], "status": entry["status"], "rec": rec,
+            # Original identity guards against editing the wrong row if the
+            # sheet shifted between listing and write.
+            "orig_winery": rec.get("winery", ""),
+            "orig_wine_name": rec.get("wine_name", ""),
+            "token": token,
+        })
+        self.telegram.send_message(
+            chat_id, _render_edit(rec, entry["status"]),
+            reply_markup=_confirm_keyboard(token),
+        )
 
     def _on_edit(self, chat_id: str, state: dict, text: str) -> None:
         records = [state["rec"]]
-        _apply_fill(records, text, _EDIT_LABELS)
+        apply_fill(records, text, _EDIT_LABELS)
         state["rec"] = records[0]
         self.backend.set_state(self._key(chat_id), state)
         self.telegram.send_message(
@@ -271,7 +305,7 @@ class EditWine:
         self._disable_buttons(chat_id, message_id)
 
         rec = state["rec"]
-        row = _build_row(rec)
+        row = build_row(rec)
         try:
             self.backend.update_wine(
                 state["row"], row,
@@ -287,7 +321,7 @@ class EditWine:
             return
 
         self.telegram.send_message(
-            chat_id, f"✅ עודכן: {_display_name(rec)}\n{_SHEET_LINK}",
+            chat_id, f"✅ עודכן: {display_name(rec)}\n{SHEET_LINK}",
         )
 
     # ---- helpers ----------------------------------------------------------
@@ -317,32 +351,48 @@ def _record_from_values(values: list) -> dict:
     Missing trailing cells become "" so every editable key is always present.
     """
     rec: dict = {}
-    for i, key in enumerate(_ROW_ORDER):
+    for i, key in enumerate(ROW_ORDER):
         val = values[i] if i < len(values) else ""
         rec[key] = "" if val is None else val
     return rec
 
 
 def _render_list(entries: list[dict], shown: list[int]) -> str:
-    lines = ["מרתף 🍷 — בחר יין לעריכה (שלח מספר), או הקלד מילה לסינון:\n"]
+    lines = ["מרתף 🍷 בחר יין לעריכה (לחץ על כפתור או שלח מספר), או הקלד מילה לסינון:\n"]
     for display_num, idx in enumerate(shown[:_MAX_LIST], start=1):
         e = entries[idx]
         rec = e["rec"]
         vintage = rec.get("vintage") or "-"
         status = e.get("status") or "-"
-        lines.append(f"{display_num}. {_display_name(rec)} ({vintage}) [{status}]")
+        lines.append(f"{display_num}. {display_name(rec)} ({vintage}) [{status}]")
     if len(shown) > _MAX_LIST:
         lines.append(f"\n...ועוד {len(shown) - _MAX_LIST}. סנן בעזרת מילה כדי לצמצם.")
     lines.append("\n/cancel לביטול.")
     return "\n".join(lines)
 
 
+def _list_keyboard(entries: list[dict], shown: list[int]) -> dict | None:
+    """Inline keyboard of tap-to-select wine buttons, or None when the view is
+    too large to show buttons for (numbers/filter remain the path then)."""
+    if not shown or len(shown) > _PICK_MAX:
+        return None
+    rows = []
+    for idx in shown:
+        e = entries[idx]
+        rec = e["rec"]
+        vintage = rec.get("vintage") or "-"
+        label = f"{display_name(rec)} ({vintage})"
+        rows.append([{"text": label[:60],
+                      "callback_data": f"editwine:pick:{e['row']}"}])
+    return {"inline_keyboard": rows}
+
+
 def _render_edit(rec: dict, status: str) -> str:
-    lines = [f"🍷 {_display_name(rec)}"]
+    lines = [f"🍷 {display_name(rec)}"]
     if status:
         lines.append(f"סטטוס: {status}")
     lines.append("- שדות (ריק = חסר, ניתן למלא/לתקן) -")
-    for key in _ROW_ORDER:
+    for key in ROW_ORDER:
         label = _FIELD_LABELS.get(key, key)
         value = rec.get(key)
         shown = value if (value or value == 0) else "(ריק)"

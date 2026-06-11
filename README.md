@@ -27,7 +27,9 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 - **Serverless Execution**: Deployed on Vercel Serverless Functions via Telegram Webhooks. No active polling or persistent compute.
 - **Dynamic Inventory Sync**: Live queries to Google Sheets. Explicitly respects "Open" vs. "Closed" bottle statuses for routing recommendations.
 - **Wine Auto-Ingestion (`/addwine`)**: Add bottles by sending front + back label photos (fused in one multimodal call) or a free-text description of one or more wines. The bot extracts the data, shows a confirmation with inline buttons, and on approval appends one row per wine to the cellar.
-- **Edit Existing Wines (`/editwine`)**: Pick a bottle already in the cellar (from a numbered list, or narrow it by typing part of its name) and fill in or correct any missing fields using the same forgiving `key: value` syntax. On approval the bot overwrites exactly that row's columns A-N in place.
+- **Edit Existing Wines (`/editwine`)**: Pick a bottle already in the cellar (tap a button, type its number, or narrow the list by name) and fill in or correct any missing fields using the same forgiving `key: value` syntax. On approval the bot overwrites exactly that row's columns A-N in place.
+- **Voice Messages**: Send a voice note instead of typing. The bot transcribes it (Gemini audio), echoes back what it heard, then routes it through the normal pipeline, so add/edit/ask all work hands-free.
+- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
 - **Resilient AI Pipeline**: Integrates the `google-genai` SDK with an automatic fallback chain (`gemini-3.1-flash-lite` → `gemma-4-31b` → `gemini-2.5-flash`) and exponential backoff to mitigate transient API errors.
 - **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via the system instructions within `sommelier_ai.py`.
 
