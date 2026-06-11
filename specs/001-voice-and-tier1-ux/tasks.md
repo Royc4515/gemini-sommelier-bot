@@ -25,6 +25,9 @@ Ordered, each independently testable.
 - [x] T7. Tests + docs: extend Fake Telegram doubles with the new methods; add
   unit tests for transcription, voice routing, the picker callback, and the new
   telegram methods; update README features. — _verifies: AC #8_
+- [x] T8. Self-register the menu on `/start` (`BOT_COMMANDS` shared with
+  `set_commands.py`); test that `/start` registers and `/reset` does not.
+  — _verifies: AC #9_
 
 ## Definition of done
 - [x] All acceptance criteria met

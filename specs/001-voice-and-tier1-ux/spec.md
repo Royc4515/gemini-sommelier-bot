@@ -58,6 +58,9 @@ skill rather than being a one-off feature.
    on tap; typing the list number still works as a fallback.
 8. The existing 100-test suite stays green; all new logic is covered with fakes;
    and a **live voice round-trip is smoke-tested** before merge (constitution §8).
+9. The bot **self-registers** the `/` command menu on `/start` (so no terminal
+   step is ever required); `set_commands.py` remains as a manual alternative.
+   `BOT_COMMANDS` is the single source of truth shared by both.
 
 ## Non-goals (explicitly out of scope)
 - Voice *replies* / text-to-speech (`sendVoice`).

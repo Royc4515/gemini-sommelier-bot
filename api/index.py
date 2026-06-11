@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from addwine import AddWine               # noqa: E402
 from editwine import EditWine             # noqa: E402
+from set_commands import BOT_COMMANDS     # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
@@ -168,6 +169,13 @@ def application(environ, start_response):
                     "אני לא זוכר שיחות קודמות מעכשיו 🍷"
                 )
             else:  # /start
+                # Self-register the '/' command menu so the user never has to
+                # run set_commands.py. /start is rare, so this is not a
+                # per-request cost (constitution §2).
+                try:
+                    TelegramClient().set_my_commands(BOT_COMMANDS)
+                except Exception:
+                    pass
                 reply = (
                     "שלום! אני הסומלייה האישי שלך 🍷\n\n"
                     "אפשר לשאול אותי על:\n"

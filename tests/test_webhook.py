@@ -181,6 +181,27 @@ class TestWebhookVoice(unittest.TestCase):
         self.assertIn("לתמלל", sent)
 
 
+class TestWebhookStartRegistersMenu(unittest.TestCase):
+    """/start self-registers the '/' command menu so no terminal step is needed."""
+
+    def test_start_calls_set_my_commands(self):
+        env = _make_environ(body={"message": {"text": "/start", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message"), \
+             patch("telegram_client.TelegramClient.set_my_commands") as mock_set, \
+             patch("chat_memory.ChatMemory.clear"):
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_set.assert_called_once()
+
+    def test_reset_does_not_register_menu(self):
+        env = _make_environ(body={"message": {"text": "/reset", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message"), \
+             patch("telegram_client.TelegramClient.set_my_commands") as mock_set, \
+             patch("chat_memory.ChatMemory.clear"):
+            _call_app(env)
+        mock_set.assert_not_called()
+
+
 class TestWebhookErrorHandling(unittest.TestCase):
     """Webhook sends a Hebrew error message when the AI flow fails."""
 
