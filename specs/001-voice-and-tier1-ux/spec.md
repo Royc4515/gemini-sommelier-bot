@@ -1,7 +1,21 @@
 # Feature 001 — Voice input + Tier-1 UX polish
 
-**Status:** draft (awaiting approval)
+**Status:** approved (self-reviewed 2026-06-11)
 **Author/date:** Claude / 2026-06-11
+
+## Review & resolved decisions
+- **AC #2 echo scope — RESOLVED: echo always.** A misrecognition is most
+  dangerous during data-entry (`/addwine`, `/editwine`), where wrong text writes
+  bad data to the sheet, so the echo is most valuable exactly there. One short
+  line is acceptable noise.
+- **Voice + numeric selection — KNOWN LIMITATION (documented, not a blocker).**
+  A spoken "two" transcribes as a Hebrew word, not the digit `text.isdigit()`
+  expects, so voice-driven *numeric* selection in `/editwine` is not guaranteed.
+  Mitigated by the name filter (works by voice) and the tap-to-select buttons
+  (AC #7). Not in scope to parse spoken numbers.
+- **AC #5 mechanism — deferred to plan** (not a spec concern): how/when
+  `setMyCommands` runs is a `plan.md` decision; the spec only requires it not run
+  per request.
 
 ## Why
 Make the bot understand **voice notes** so every existing skill (add / edit /

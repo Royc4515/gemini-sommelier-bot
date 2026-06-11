@@ -36,4 +36,4 @@ specs/
 
 | # | Feature | Spec | Plan | Tasks | Done |
 |---|---------|------|------|-------|------|
-| 001 | Voice input + Tier-1 UX | drafted | — | — | — |
+| 001 | Voice input + Tier-1 UX | approved | drafted | — | — |
