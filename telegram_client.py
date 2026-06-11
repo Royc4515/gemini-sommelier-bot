@@ -116,6 +116,49 @@ class TelegramClient:
         """Convenience: resolve a *file_id* and return its bytes."""
         return self.download_file(self.get_file_path(file_id))
 
+    def download_voice(self, file_id: str) -> bytes:
+        """Convenience: resolve a voice-note *file_id* and return its bytes.
+
+        Same mechanism as photos (getFile is content-agnostic); named
+        separately so the /voice path reads clearly.
+        """
+        return self.download_file(self.get_file_path(file_id))
+
+    # ------------------------------------------------------------------
+    # Presence + command menu (Tier-1 UX)
+    # ------------------------------------------------------------------
+
+    def send_chat_action(self, chat_id: int | str, action: str = "typing") -> dict:
+        """Show a transient status (e.g. 'typing', 'record_voice') to the user.
+
+        Best-effort: a failed indicator must never block the real work.
+        """
+        data = {"chat_id": chat_id, "action": action}
+        req = urllib.request.Request(
+            url=f"{self.api_url}/sendChatAction",
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return {}
+
+    def set_my_commands(self, commands: list[dict]) -> dict:
+        """Register the bot's '/' command menu. *commands* is a list of
+        {"command","description"} dicts. Run once (not per request)."""
+        data = {"commands": commands}
+        req = urllib.request.Request(
+            url=f"{self.api_url}/setMyCommands",
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     # ------------------------------------------------------------------
     # Inline keyboard callbacks (used by the /addwine confirmation)
     # ------------------------------------------------------------------

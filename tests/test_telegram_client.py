@@ -150,5 +150,52 @@ class TestFallbackOnBadRequest(unittest.TestCase):
         self.assertNotIn("parse_mode", call_payloads[1])
 
 
+class TestVoiceAndMenu(unittest.TestCase):
+    """TelegramClient — voice download, chat actions, and the command menu."""
+
+    def setUp(self):
+        self.client = TelegramClient()
+
+    def test_send_chat_action_payload(self):
+        captured = {}
+
+        def fake_urlopen(req, **kwargs):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _make_http_response({"ok": True})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.send_chat_action(5, "record_voice")
+
+        self.assertTrue(captured["url"].endswith("/sendChatAction"))
+        self.assertEqual(captured["body"], {"chat_id": 5, "action": "record_voice"})
+
+    def test_send_chat_action_swallows_errors(self):
+        with patch("urllib.request.urlopen", side_effect=Exception("network")):
+            self.assertEqual(self.client.send_chat_action(5), {})
+
+    def test_set_my_commands_payload(self):
+        captured = {}
+
+        def fake_urlopen(req, **kwargs):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _make_http_response({"ok": True, "result": True})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.set_my_commands([{"command": "addwine", "description": "x"}])
+
+        self.assertTrue(captured["url"].endswith("/setMyCommands"))
+        self.assertEqual(captured["body"]["commands"][0]["command"], "addwine")
+
+    def test_download_voice_resolves_then_downloads(self):
+        with patch.object(self.client, "get_file_path", return_value="voice/f_1.oga") as gfp, \
+             patch.object(self.client, "download_file", return_value=b"audio") as dl:
+            out = self.client.download_voice("fid")
+        gfp.assert_called_once_with("fid")
+        dl.assert_called_once_with("voice/f_1.oga")
+        self.assertEqual(out, b"audio")
+
+
 if __name__ == "__main__":
     unittest.main()

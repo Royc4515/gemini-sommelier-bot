@@ -140,6 +140,47 @@ class TestWebhookAuthorization(unittest.TestCase):
         mock_send.assert_called_once()
 
 
+class TestWebhookVoice(unittest.TestCase):
+    """Voice notes are transcribed, echoed, and routed through the text pipeline."""
+
+    def test_voice_message_transcribed_and_routed(self):
+        env = _make_environ(body={"message": {
+            "voice": {"file_id": "v1", "mime_type": "audio/ogg", "file_size": 1000},
+            "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.download_voice", return_value=b"audio"), \
+             patch("telegram_client.TelegramClient.send_chat_action"), \
+             patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("sommelier_ai.SommelierAI.transcribe_audio", return_value="מה לשתות עם דג") as mock_tx, \
+             patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="inv"), \
+             patch("sommelier_ai.SommelierAI.ask", return_value="reply") as mock_ask:
+            status, _ = _call_app(env)
+
+        self.assertEqual(status, "200 OK")
+        mock_tx.assert_called_once()
+        mock_ask.assert_called_once()
+        # the transcript became the user message
+        self.assertIn("מה לשתות עם דג", mock_ask.call_args[1]["user_message"])
+        # and was echoed back to the user
+        echoed = any("מה לשתות עם דג" in c.kwargs.get("text", "")
+                     for c in mock_send.call_args_list)
+        self.assertTrue(echoed)
+
+    def test_voice_transcription_failure_is_graceful(self):
+        env = _make_environ(body={"message": {
+            "voice": {"file_id": "v1", "file_size": 1000}, "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.download_voice", return_value=b"audio"), \
+             patch("telegram_client.TelegramClient.send_chat_action"), \
+             patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("sommelier_ai.SommelierAI.transcribe_audio", return_value=""), \
+             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+            status, _ = _call_app(env)
+
+        self.assertEqual(status, "200 OK")
+        mock_ask.assert_not_called()
+        sent = " ".join(c.kwargs.get("text", "") for c in mock_send.call_args_list)
+        self.assertIn("לתמלל", sent)
+
+
 class TestWebhookErrorHandling(unittest.TestCase):
     """Webhook sends a Hebrew error message when the AI flow fails."""
 

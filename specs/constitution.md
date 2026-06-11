@@ -34,7 +34,7 @@ seam is mandatory from day one.)
 
 ## 7. Hebrew-first UX
 Friendly Israeli tone (בגובה העיניים, זורם, לא מליצי). **No em dashes** in any
-user-facing text or code.
+user-facing text (messages sent to the user). Docstrings/comments are exempt.
 
 ## 8. Test discipline
 Pure functions + fakes cover logic before merge (the suite must stay green).

@@ -89,6 +89,46 @@ def application(environ, start_response):
             pass
         return _respond("200 OK", "OK — unauthorized user")
 
+    # --- Voice notes: transcribe to text, then route like any text message ---
+    # Voice is input normalization that sits ABOVE routing (spec 001): once the
+    # note is transcribed into message["text"], the existing handlers below run
+    # unchanged. Failure degrades gracefully and still returns 200.
+    voice = message.get("voice")
+    if voice and not message.get("text"):
+        tg = TelegramClient()
+        if (voice.get("file_size") or 0) > 20 * 1024 * 1024:  # getFile caps at 20MB
+            try:
+                tg.send_message(chat_id=chat_id,
+                                text="ההודעה הקולית ארוכה מדי. נסה הקלטה קצרה יותר.")
+            except Exception:
+                pass
+            return _respond("200 OK", "OK — voice too large")
+
+        transcript = ""
+        try:
+            tg.send_chat_action(chat_id, "record_voice")
+            audio = tg.download_voice(voice["file_id"])
+            transcript = SommelierAI().transcribe_audio(
+                audio, voice.get("mime_type") or "audio/ogg"
+            )
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: voice transcription failed: {exc}\n")
+
+        if not transcript:
+            try:
+                tg.send_message(chat_id=chat_id,
+                                text="לא הצלחתי לתמלל את ההודעה הקולית. נסה שוב, או כתוב בטקסט.")
+            except Exception:
+                pass
+            return _respond("200 OK", "OK — voice not transcribed")
+
+        # Echo what we heard so a misrecognition is visible before we act on it.
+        try:
+            tg.send_message(chat_id=chat_id, text=f'🎤 "{transcript}"')
+        except Exception:
+            pass
+        message["text"] = transcript
+
     # --- /addwine ingestion flow (commands, photos, in-flow text) ---
     # Runs before the non-text guard so it can receive label photos. Returns
     # True only when the update belongs to an active flow (or starts one), so
@@ -145,6 +185,12 @@ def application(environ, start_response):
 
     # --- Execute flow ---
     try:
+        # Native "typing…" while we assemble context and call the model.
+        try:
+            TelegramClient().send_chat_action(chat_id, "typing")
+        except Exception:
+            pass
+
         memory = ChatMemory()
         history, long_term_summary = memory.get_context(str(chat_id))
 

@@ -52,6 +52,16 @@ _SUMMARIZER_SYSTEM = (
 )
 
 # ------------------------------------------------------------------
+# Voice transcription prompt
+# ------------------------------------------------------------------
+_TRANSCRIPTION_PROMPT = (
+    "Transcribe the following audio verbatim, in its original spoken language. "
+    "Return ONLY the transcription text - no preamble, no translation, no "
+    "quotation marks, no commentary. If there is no intelligible speech, return "
+    "an empty string."
+)
+
+# ------------------------------------------------------------------
 # /addwine extraction prompt
 # ------------------------------------------------------------------
 # The keys the model must return per wine. The first block is read off the label
@@ -197,6 +207,36 @@ class SommelierAI:
         contents = [_EXTRACTION_PROMPT, f"Wine description(s):\n{description}"]
         return self._extract(contents)
 
+    # ------------------------------------------------------------------
+    # Public: voice transcription (multimodal audio)
+    # ------------------------------------------------------------------
+
+    def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+        """Transcribe a voice note to text in its original language.
+
+        Restricted to audio-capable models: the gemma fallbacks cannot take
+        audio, so feeding them a voice note would raise and abort. We pass only
+        the gemini models from the chain (constitution §5: degrade, never crash).
+        """
+        audio_models = [m for m in self.FALLBACK_MODELS if not m.startswith("gemma")]
+        contents = [
+            _TRANSCRIPTION_PROMPT,
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+        ]
+        raw = self._call_with_retry(
+            lambda model_name: self._single_generate_multimodal(model_name, contents),
+            models=audio_models,
+        )
+        return (raw or "").strip()
+
+    def _single_generate_multimodal(self, model_name: str, contents: list) -> str:
+        """Plain (non-JSON) generate_content for a multimodal prompt."""
+        response = self.client.models.generate_content(
+            model=model_name,
+            contents=contents,
+        )
+        return response.text or ""
+
     def _extract(self, contents: list) -> list[dict]:
         """Run extraction through the fallback chain and parse defensively."""
         raw = self._call_with_retry(
@@ -254,10 +294,14 @@ class SommelierAI:
         )
         return response.text or ""
 
-    def _call_with_retry(self, fn) -> str:
-        """Execute *fn(model_name)* with exponential backoff on transient errors."""
+    def _call_with_retry(self, fn, models=None) -> str:
+        """Execute *fn(model_name)* with exponential backoff on transient errors.
+
+        *models* lets a caller restrict the fallback chain (e.g. transcription
+        passes only audio-capable models); defaults to the full chain.
+        """
         last_error = None
-        for model_name in self.FALLBACK_MODELS:
+        for model_name in (models or self.FALLBACK_MODELS):
             for attempt in range(self._MAX_RETRIES):
                 try:
                     return fn(model_name)

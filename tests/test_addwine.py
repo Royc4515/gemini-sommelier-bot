@@ -70,9 +70,13 @@ class FakeTelegram:
     def __init__(self):
         self.sent = []          # list of (text, reply_markup)
         self.disabled = []
+        self.actions = []       # chat actions sent
 
     def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((text, reply_markup))
+
+    def send_chat_action(self, chat_id, action="typing"):
+        self.actions.append(action)
 
     def download_photo(self, file_id):
         return b"image-bytes"

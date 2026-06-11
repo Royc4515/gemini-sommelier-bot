@@ -157,7 +157,7 @@ class AddWine:
             return
 
         if stage == _AWAIT_BACK:
-            self.telegram.send_message(chat_id, "קורא את התוויות, רגע...")
+            self.telegram.send_chat_action(chat_id, "typing")
             try:
                 front = self.telegram.download_photo(state["front_file_id"])
                 back = self.telegram.download_photo(file_id)
@@ -183,7 +183,7 @@ class AddWine:
         stage = state.get("state")
         if stage in (_AWAIT_INPUT, _AWAIT_BACK):
             # Text in the photo path is treated as a description (text mode).
-            self.telegram.send_message(chat_id, "מנתח את התיאור, רגע...")
+            self.telegram.send_chat_action(chat_id, "typing")
             try:
                 wines = SommelierAI().extract_wines_from_text(text)
             except Exception as exc:
