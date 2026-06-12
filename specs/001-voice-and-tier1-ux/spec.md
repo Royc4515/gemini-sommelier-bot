@@ -3,6 +3,17 @@
 **Status:** approved (self-reviewed 2026-06-11)
 **Author/date:** Claude / 2026-06-11
 
+## Live-test findings (2026-06-12) & fixes
+All 8 manual tests passed on the real bot (incl. a live `/editwine` write to the
+sheet, which also closed the deferred contract smoke). Two defects found + fixed:
+- **Transcription rendered Hebrew speech as English homophones** once
+  ("מה כדאי לשתות עם סטייק" → "Make a daily store team steak"). Fix: strengthened
+  `_TRANSCRIPTION_PROMPT` to transcribe in the spoken language's native script,
+  biased to Hebrew.
+- **`purchase_date` displayed as an ISO datetime** in `/editwine` (and would be
+  written back as such). Fix: `_format_date` normalizes it to dd/mm/yyyy in
+  `_record_from_values`.
+
 ## Review & resolved decisions
 - **AC #2 echo scope — RESOLVED: echo always.** A misrecognition is most
   dangerous during data-entry (`/addwine`, `/editwine`), where wrong text writes

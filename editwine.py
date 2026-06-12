@@ -23,6 +23,7 @@ addwine uses, so the two flows never collide and a serverless cold start can
 resume mid-edit.
 """
 
+import re
 import sys
 import uuid
 
@@ -349,16 +350,33 @@ def _record_from_values(values: list) -> dict:
     """Map a sheet row's A-N cells onto the addwine record dict (by column order).
 
     Missing trailing cells become "" so every editable key is always present.
+    The purchase_date cell comes back from Apps Script as an ISO datetime (a
+    real sheet date), so we normalize it to dd/mm/yyyy - both for display and so
+    a save writes a clean date string back, not the ISO blob.
     """
     rec: dict = {}
     for i, key in enumerate(ROW_ORDER):
         val = values[i] if i < len(values) else ""
-        rec[key] = "" if val is None else val
+        val = "" if val is None else val
+        if key == "purchase_date":
+            val = _format_date(val)
+        rec[key] = val
     return rec
 
 
+def _format_date(val) -> str:
+    """Turn an ISO datetime (e.g. '2026-04-17T00:00:00.000Z') into '17/04/2026'.
+    Leaves anything that is not an ISO datetime untouched."""
+    s = str(val).strip()
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})T", s)
+    if m:
+        year, month, day = m.groups()
+        return f"{day}/{month}/{year}"
+    return s
+
+
 def _render_list(entries: list[dict], shown: list[int]) -> str:
-    lines = ["מרתף 🍷 בחר יין לעריכה (לחץ על כפתור או שלח מספר), או הקלד מילה לסינון:\n"]
+    lines = ["מרתף 🍷 בחר יין לעריכה: שלח מספר, או הקלד מילה לסינון (וגם אפשר ללחוץ על כפתור אם מופיע):\n"]
     for display_num, idx in enumerate(shown[:_MAX_LIST], start=1):
         e = entries[idx]
         rec = e["rec"]
