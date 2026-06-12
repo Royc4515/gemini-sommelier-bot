@@ -64,6 +64,23 @@ _TRANSCRIPTION_PROMPT = (
 )
 
 # ------------------------------------------------------------------
+# Photo "tell me about this wine" prompt (info only, no cellar write)
+# ------------------------------------------------------------------
+_WINE_INFO_PROMPT = (
+    "You are the sommelier. The user sent a PHOTO of a wine (usually its label) "
+    "and wants to know about it. Reply in Hebrew, friendly Israeli tone, concise "
+    "(under ~250 words), no em dashes.\n"
+    "Read what you can from the label and give:\n"
+    "- זיהוי: יקב / שם היין / בציר אם קריאים (אל תמציא; אם לא ברור, ציין).\n"
+    "- סגנון וזן: צבע/סגנון והזן או הבלנד אם ידוע.\n"
+    "- פרופיל צפוי: ארומות/טעמים/מבנה שניתן לצפות (נסח כ'צפוי', הבקבוק סגור).\n"
+    "- התאמה למאכל: הצעה קצרה.\n"
+    "- מתי לשתות: מוכן עכשיו או כדאי לשמור, לפי הבציר והפוטנציאל.\n"
+    "If the image is clearly NOT a wine, say so politely and briefly instead. "
+    "If the user added a question/caption, answer THAT specifically as well."
+)
+
+# ------------------------------------------------------------------
 # /addwine extraction prompt
 # ------------------------------------------------------------------
 # The keys the model must return per wine. The first block is read off the label
@@ -238,6 +255,30 @@ class SommelierAI:
             contents=contents,
         )
         return response.text or ""
+
+    # ------------------------------------------------------------------
+    # Public: photo "tell me about this wine" (info only, no cellar write)
+    # ------------------------------------------------------------------
+
+    def describe_wine_from_image(
+        self, image_bytes: bytes, mime_type: str = "image/jpeg", caption: str = ""
+    ) -> str:
+        """Return a Hebrew sommelier rundown of the wine in *image_bytes*.
+
+        Restricted to image-capable models (gemma cannot take images), like
+        transcription. Pure information: never writes to the cellar.
+        """
+        image_models = [m for m in self.FALLBACK_MODELS if not m.startswith("gemma")]
+        contents = [
+            _WINE_INFO_PROMPT,
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+        ]
+        if caption and caption.strip():
+            contents.append(f"שאלת המשתמש על היין: {caption.strip()}")
+        return self._call_with_retry(
+            lambda model_name: self._single_generate_multimodal(model_name, contents),
+            models=image_models,
+        )
 
     def _extract(self, contents: list) -> list[dict]:
         """Run extraction through the fallback chain and parse defensively."""

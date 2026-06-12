@@ -1,6 +1,6 @@
 # Feature 002 — Photo → "tell me about this wine"
 
-**Status:** draft (awaiting approval)
+**Status:** approved (self-reviewed 2026-06-12)
 **Author/date:** Claude / 2026-06-12
 
 ## Why
