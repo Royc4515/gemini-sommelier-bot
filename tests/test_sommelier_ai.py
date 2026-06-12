@@ -176,6 +176,28 @@ class TestSommelierAI(unittest.TestCase):
         self.assertTrue(models_used)
         self.assertFalse(any(m.startswith("gemma") for m in models_used))
 
+    # ---- photo "tell me about this wine" --------------------------------
+
+    def test_describe_wine_from_image_returns_text(self):
+        mock_response = MagicMock()
+        mock_response.text = "יין אדום בסגנון ים תיכוני"
+        self.mock_client.models.generate_content.return_value = mock_response
+
+        result = self.ai.describe_wine_from_image(b"img-bytes", "image/jpeg", "מתאים לפסטה?")
+
+        self.assertEqual(result, "יין אדום בסגנון ים תיכוני")
+        used_model = self.mock_client.models.generate_content.call_args[1]["model"]
+        self.assertFalse(used_model.startswith("gemma"))
+
+    def test_describe_wine_from_image_never_uses_gemma(self):
+        self.mock_client.models.generate_content.side_effect = Exception("429 Quota Exceeded")
+        with patch("sys.stderr.write"):
+            with self.assertRaises(Exception):
+                self.ai.describe_wine_from_image(b"x", "image/jpeg")
+        models_used = [c[1]["model"]
+                       for c in self.mock_client.models.generate_content.call_args_list]
+        self.assertFalse(any(m.startswith("gemma") for m in models_used))
+
 if __name__ == "__main__":
     unittest.main()
 

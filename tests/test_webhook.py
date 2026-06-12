@@ -181,6 +181,42 @@ class TestWebhookVoice(unittest.TestCase):
         self.assertIn("לתמלל", sent)
 
 
+class TestWebhookPhotoInfo(unittest.TestCase):
+    """A bare photo (outside any flow) is described, with no cellar write."""
+
+    def test_bare_photo_is_described_with_caption(self):
+        env = _make_environ(body={"message": {
+            "photo": [{"file_id": "small"}, {"file_id": "big"}],
+            "caption": "מתאים לפסטה?", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.download_photo", return_value=b"img") as mock_dl, \
+             patch("telegram_client.TelegramClient.send_chat_action"), \
+             patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("sommelier_ai.SommelierAI.describe_wine_from_image",
+                   return_value="יין אדום נחמד") as mock_desc, \
+             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+            status, _ = _call_app(env)
+
+        self.assertEqual(status, "200 OK")
+        mock_desc.assert_called_once()
+        # largest photo used, caption forwarded
+        mock_dl.assert_called_once_with("big")
+        self.assertEqual(mock_desc.call_args[0][2], "מתאים לפסטה?")
+        mock_ask.assert_not_called()  # info path must not run the chat flow
+        sent = " ".join(c.kwargs.get("text", "") for c in mock_send.call_args_list)
+        self.assertIn("יין אדום נחמד", sent)
+
+    def test_photo_failure_is_graceful(self):
+        env = _make_environ(body={"message": {
+            "photo": [{"file_id": "p1"}], "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.download_photo", side_effect=Exception("net")), \
+             patch("telegram_client.TelegramClient.send_chat_action"), \
+             patch("telegram_client.TelegramClient.send_message") as mock_send:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        sent = " ".join(c.kwargs.get("text", "") for c in mock_send.call_args_list)
+        self.assertIn("לא הצלחתי", sent)
+
+
 class TestWebhookStartRegistersMenu(unittest.TestCase):
     """/start self-registers the '/' command menu so no terminal step is needed."""
 

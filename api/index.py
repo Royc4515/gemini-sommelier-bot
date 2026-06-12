@@ -147,6 +147,30 @@ def application(environ, start_response):
             pass
         return _respond("200 OK", "OK")
 
+    # --- Bare photo (outside any flow): "tell me about this wine" (info only) ---
+    # Reached only after the flow handlers declined, so an in-/addwine photo has
+    # already been consumed above. Pure information; never writes to the cellar.
+    photos = message.get("photo")
+    if photos:
+        tg = TelegramClient()
+        info = ""
+        try:
+            tg.send_chat_action(chat_id, "typing")
+            img = tg.download_photo(photos[-1]["file_id"])
+            info = SommelierAI().describe_wine_from_image(
+                img, "image/jpeg", message.get("caption") or ""
+            )
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: photo wine-info failed: {exc}\n")
+        try:
+            tg.send_message(
+                chat_id=chat_id,
+                text=info or "לא הצלחתי לקרוא את התמונה. נסה תמונה ברורה יותר של התווית.",
+            )
+        except Exception:
+            pass
+        return _respond("200 OK", "OK")
+
     # --- Safety: ignore non-text messages ---
     text = message.get("text")
     if not text:
