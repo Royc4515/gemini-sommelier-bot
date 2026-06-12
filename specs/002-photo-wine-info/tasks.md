@@ -16,6 +16,6 @@
 ## Definition of done
 - [x] All acceptance criteria met
 - [x] Existing suite green + new logic covered with fakes (120 tests pass)
-- [ ] Live smoke: a real label photo (and one with a caption) gives a sensible
-  Hebrew rundown; an in-`/addwine` photo still ingests  ← **pending: your bot**
+- [x] Live smoke: real label photo + caption gave sensible Hebrew rundowns;
+  an in-`/addwine` photo still ingests (verified 2026-06-12)
 - [x] Spec/plan updated if reality diverged (none did)

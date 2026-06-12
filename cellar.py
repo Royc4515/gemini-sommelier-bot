@@ -140,6 +140,19 @@ class CellarBackend:
             raise RuntimeError(f"Cellar update failed: {result}")
         return result
 
+    def set_status(self, row: int, status: str, expect: dict) -> dict:
+        """Set the status column ("סטטוס חדש") of *row* to *status*. Raises on failure.
+
+        Only the status cell is written (A-N and O/P/Q untouched). *expect*
+        carries the bottle's original identity so a shifted row is refused.
+        """
+        result = self._post({
+            "action": "set_status", "row": row, "status": status, "expect": expect,
+        })
+        if result.get("status") != "success":
+            raise RuntimeError(f"Set status failed: {result}")
+        return result
+
     def _post(self, payload: dict) -> dict:
         if self._secret:
             payload = {**payload, "key": self._secret}

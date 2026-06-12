@@ -37,4 +37,5 @@ specs/
 | # | Feature | Spec | Plan | Tasks | Done |
 |---|---------|------|------|-------|------|
 | 001 | Voice input + Tier-1 UX | approved | approved | approved | ✅ live-verified |
-| 002 | Photo → wine info | approved | approved | approved | code done; live smoke pending |
+| 002 | Photo → wine info | approved | approved | approved | ✅ live-verified |
+| 003 | Open / Finish a bottle | approved | approved | approved | code done; needs Apps Script redeploy + live smoke |
