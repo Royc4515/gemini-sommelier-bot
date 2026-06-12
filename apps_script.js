@@ -92,6 +92,7 @@ function doPost(e) {
     switch (action) {
       case "add_wine":       return _jsonOut(_addWine(payload));
       case "update_wine":    return _jsonOut(_updateWine(payload));
+      case "set_status":     return _jsonOut(_setStatus(payload));
       case "addwine_state":  return _jsonOut(_stateSet(payload));
       default:               return _jsonOut(_memorySet(payload)); // memory (legacy)
     }
@@ -249,6 +250,36 @@ function _updateWine(payload) {
 
   sheet.getRange(row, 1, 1, CELLAR_WRITE_COLS).setValues([values]);
   return {"status": "success", "row": row, "tab": sheet.getName()};
+}
+
+function _setStatus(payload) {
+  // payload: { row: <1-indexed>, status: "Open"|"Closed"|"Finished",
+  //            expect: {winery, wine_name} }
+  // Writes ONLY the status column (located by header). Never touches A-N or O/P/Q.
+  var row = payload.row;
+  if (!row || row < 2) return {"error": "Bad row: " + row};
+  var status = String(payload.status || "");
+  if (["Open", "Closed", "Finished"].indexOf(status) < 0) {
+    return {"error": "Bad status: " + status};
+  }
+
+  var sheet = _getCellarSheet();
+  if (row > sheet.getLastRow()) return {"error": "Row " + row + " out of range"};
+
+  // Identity guard: refuse if the row no longer holds the wine we listed.
+  var expect = payload.expect || {};
+  if (expect.winery !== undefined || expect.wine_name !== undefined) {
+    var current = sheet.getRange(row, 1, 1, 2).getValues()[0];
+    if (String(current[0]).trim() !== String(expect.winery || "").trim() ||
+        String(current[1]).trim() !== String(expect.wine_name || "").trim()) {
+      return {"error": "row_mismatch", "row": row};
+    }
+  }
+
+  var col = _findHeaderColumn(sheet, STATUS_HEADER_MARKER);
+  if (col < 1) return {"error": "status column '" + STATUS_HEADER_MARKER + "' not found"};
+  sheet.getRange(row, col, 1, 1).setValue(status);
+  return {"status": "success", "row": row, "status_set": status};
 }
 
 function _findHeaderColumn(sheet, headerName) {
