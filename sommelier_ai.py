@@ -55,10 +55,12 @@ _SUMMARIZER_SYSTEM = (
 # Voice transcription prompt
 # ------------------------------------------------------------------
 _TRANSCRIPTION_PROMPT = (
-    "Transcribe the following audio verbatim, in its original spoken language. "
-    "Return ONLY the transcription text - no preamble, no translation, no "
-    "quotation marks, no commentary. If there is no intelligible speech, return "
-    "an empty string."
+    "Transcribe the following audio to text. Output ONLY the transcription - no "
+    "preamble, no translation, no quotation marks, no commentary. Transcribe in "
+    "the SAME language actually spoken, using that language's native script. The "
+    "speaker most often speaks Hebrew: if the speech is Hebrew, write it in Hebrew "
+    "letters, NOT a phonetic English approximation. If there is no intelligible "
+    "speech, return an empty string."
 )
 
 # ------------------------------------------------------------------

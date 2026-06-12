@@ -126,6 +126,19 @@ class HelperTests(unittest.TestCase):
         rec = _record_from_values(["W", None])
         self.assertEqual(rec["wine_name"], "")
 
+    def test_record_from_values_normalizes_iso_date(self):
+        # Apps Script returns sheet dates as ISO datetimes; we show dd/mm/yyyy
+        # and (crucially) write that clean string back, not the ISO blob.
+        values = ["W", "N", "אדום", "2021", "", "", 1, "", "",
+                  "2026-04-17T00:00:00.000Z", "", "", "", ""]
+        rec = _record_from_values(values)
+        self.assertEqual(rec["purchase_date"], "17/04/2026")
+
+    def test_record_from_values_leaves_plain_date(self):
+        values = ["W", "N", "", "", "", "", 1, "", "", "17/04/2026", "", "", "", ""]
+        rec = _record_from_values(values)
+        self.assertEqual(rec["purchase_date"], "17/04/2026")
+
     def test_render_edit_marks_blanks(self):
         rec = _record_from_values(_WINES[1]["values"])
         text = _render_edit(rec, "Closed")
