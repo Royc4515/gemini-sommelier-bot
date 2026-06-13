@@ -20,7 +20,6 @@
 ## Definition of done
 - [x] All acceptance criteria met (code)
 - [x] Existing suite green + new logic covered with fakes (132 tests pass)
-- [ ] Apps Script redeployed by the user  ← **pending**
-- [ ] Live smoke: flipped a real bottle's status; sheet status changed, A-N intact
-  ← **pending (after redeploy)**
+- [x] Apps Script redeployed by the user (2026-06-13)
+- [x] Live smoke: flipped a real bottle's status; sheet changed, A-N intact (verified 2026-06-13)
 - [x] Spec/plan updated if reality diverged (none did)

@@ -64,20 +64,22 @@ _TRANSCRIPTION_PROMPT = (
 )
 
 # ------------------------------------------------------------------
-# Photo "tell me about this wine" prompt (info only, no cellar write)
+# Photo analysis prompt — wine label vs. food (info or pairing)
 # ------------------------------------------------------------------
-_WINE_INFO_PROMPT = (
-    "You are the sommelier. The user sent a PHOTO of a wine (usually its label) "
-    "and wants to know about it. Reply in Hebrew, friendly Israeli tone, concise "
-    "(under ~250 words), no em dashes.\n"
-    "Read what you can from the label and give:\n"
-    "- זיהוי: יקב / שם היין / בציר אם קריאים (אל תמציא; אם לא ברור, ציין).\n"
-    "- סגנון וזן: צבע/סגנון והזן או הבלנד אם ידוע.\n"
-    "- פרופיל צפוי: ארומות/טעמים/מבנה שניתן לצפות (נסח כ'צפוי', הבקבוק סגור).\n"
-    "- התאמה למאכל: הצעה קצרה.\n"
-    "- מתי לשתות: מוכן עכשיו או כדאי לשמור, לפי הבציר והפוטנציאל.\n"
-    "If the image is clearly NOT a wine, say so politely and briefly instead. "
-    "If the user added a question/caption, answer THAT specifically as well."
+_PHOTO_PROMPT = (
+    "You are the sommelier. The user sent a PHOTO. Reply in Hebrew, friendly "
+    "Israeli tone, concise (under ~250 words), no em dashes. You recommend only "
+    "kosher, dry wines.\n"
+    "First decide what the photo shows:\n"
+    "A) A WINE (a bottle/label): give a rundown - זיהוי (יקב/שם/בציר אם קריאים, "
+    "אל תמציא), סגנון וזן, פרופיל צפוי (נסח כ'צפוי', הבקבוק סגור), התאמה למאכל, "
+    "ומתי לשתות (מוכן/לשמור לפי הבציר).\n"
+    "B) FOOD / a DISH: recommend what to drink with it FROM THE USER'S CELLAR "
+    "below. Prefer bottles marked Open, respect the 'המלצת פתיחה' data, and name "
+    "specific bottles you see in the inventory. If the cellar is empty or not "
+    "provided, give a general kosher-dry suggestion and say so.\n"
+    "C) NEITHER: say briefly and politely that it is not a wine or a dish.\n"
+    "If the user added a caption/question, answer THAT specifically too."
 )
 
 # ------------------------------------------------------------------
@@ -260,21 +262,29 @@ class SommelierAI:
     # Public: photo "tell me about this wine" (info only, no cellar write)
     # ------------------------------------------------------------------
 
-    def describe_wine_from_image(
-        self, image_bytes: bytes, mime_type: str = "image/jpeg", caption: str = ""
+    def analyze_wine_photo(
+        self,
+        image_bytes: bytes,
+        mime_type: str = "image/jpeg",
+        caption: str = "",
+        inventory_context: str = "",
     ) -> str:
-        """Return a Hebrew sommelier rundown of the wine in *image_bytes*.
+        """Analyze a bare photo and reply in Hebrew.
 
-        Restricted to image-capable models (gemma cannot take images), like
-        transcription. Pure information: never writes to the cellar.
+        Decides wine-label vs. food vs. neither: a label gets a rundown, a dish
+        gets a pairing drawn from *inventory_context* (Open-first). Restricted to
+        image-capable models (gemma cannot take images). Read only - never writes
+        to the cellar.
         """
         image_models = [m for m in self.FALLBACK_MODELS if not m.startswith("gemma")]
         contents = [
-            _WINE_INFO_PROMPT,
+            _PHOTO_PROMPT,
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
         ]
+        if inventory_context and inventory_context.strip():
+            contents.append(f"מלאי המרתף של המשתמש:\n{inventory_context.strip()}")
         if caption and caption.strip():
-            contents.append(f"שאלת המשתמש על היין: {caption.strip()}")
+            contents.append(f"שאלת/הערת המשתמש: {caption.strip()}")
         return self._call_with_retry(
             lambda model_name: self._single_generate_multimodal(model_name, contents),
             models=image_models,

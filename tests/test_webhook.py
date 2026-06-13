@@ -184,26 +184,27 @@ class TestWebhookVoice(unittest.TestCase):
 class TestWebhookPhotoInfo(unittest.TestCase):
     """A bare photo (outside any flow) is described, with no cellar write."""
 
-    def test_bare_photo_is_described_with_caption(self):
+    def test_bare_photo_is_analyzed_with_caption_and_inventory(self):
         env = _make_environ(body={"message": {
             "photo": [{"file_id": "small"}, {"file_id": "big"}],
-            "caption": "מתאים לפסטה?", "chat": {"id": 999}}})
+            "caption": "מה לשתות עם זה?", "chat": {"id": 999}}})
         with patch("telegram_client.TelegramClient.download_photo", return_value=b"img") as mock_dl, \
              patch("telegram_client.TelegramClient.send_chat_action"), \
              patch("telegram_client.TelegramClient.send_message") as mock_send, \
-             patch("sommelier_ai.SommelierAI.describe_wine_from_image",
-                   return_value="יין אדום נחמד") as mock_desc, \
+             patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="cellar-list"), \
+             patch("sommelier_ai.SommelierAI.analyze_wine_photo",
+                   return_value="כדאי לפתוח את הפלם") as mock_analyze, \
              patch("sommelier_ai.SommelierAI.ask") as mock_ask:
             status, _ = _call_app(env)
 
         self.assertEqual(status, "200 OK")
-        mock_desc.assert_called_once()
-        # largest photo used, caption forwarded
-        mock_dl.assert_called_once_with("big")
-        self.assertEqual(mock_desc.call_args[0][2], "מתאים לפסטה?")
-        mock_ask.assert_not_called()  # info path must not run the chat flow
+        mock_analyze.assert_called_once()
+        mock_dl.assert_called_once_with("big")          # largest photo used
+        self.assertEqual(mock_analyze.call_args[0][2], "מה לשתות עם זה?")  # caption
+        self.assertEqual(mock_analyze.call_args[0][3], "cellar-list")       # inventory passed
+        mock_ask.assert_not_called()                     # photo path must not run chat
         sent = " ".join(c.kwargs.get("text", "") for c in mock_send.call_args_list)
-        self.assertIn("יין אדום נחמד", sent)
+        self.assertIn("כדאי לפתוח את הפלם", sent)
 
     def test_photo_failure_is_graceful(self):
         env = _make_environ(body={"message": {
