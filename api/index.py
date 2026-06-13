@@ -151,9 +151,9 @@ def application(environ, start_response):
             pass
         return _respond("200 OK", "OK")
 
-    # --- Bare photo (outside any flow): "tell me about this wine" (info only) ---
+    # --- Bare photo (outside any flow): wine label -> info, food -> pairing ---
     # Reached only after the flow handlers declined, so an in-/addwine photo has
-    # already been consumed above. Pure information; never writes to the cellar.
+    # already been consumed above. Read only; never writes to the cellar.
     photos = message.get("photo")
     if photos:
         tg = TelegramClient()
@@ -161,15 +161,20 @@ def application(environ, start_response):
         try:
             tg.send_chat_action(chat_id, "typing")
             img = tg.download_photo(photos[-1]["file_id"])
-            info = SommelierAI().describe_wine_from_image(
-                img, "image/jpeg", message.get("caption") or ""
+            # Best-effort cellar context so a food photo can pair from real bottles.
+            try:
+                inventory_text = WineInventory().get_formatted_inventory()
+            except Exception:
+                inventory_text = ""
+            info = SommelierAI().analyze_wine_photo(
+                img, "image/jpeg", message.get("caption") or "", inventory_text
             )
         except Exception as exc:
-            sys.stderr.write(f"ERROR: photo wine-info failed: {exc}\n")
+            sys.stderr.write(f"ERROR: photo analysis failed: {exc}\n")
         try:
             tg.send_message(
                 chat_id=chat_id,
-                text=info or "לא הצלחתי לקרוא את התמונה. נסה תמונה ברורה יותר של התווית.",
+                text=info or "לא הצלחתי לנתח את התמונה. נסה תמונה ברורה יותר.",
             )
         except Exception:
             pass
