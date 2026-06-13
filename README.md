@@ -31,7 +31,8 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 - **Voice Messages**: Send a voice note instead of typing. The bot transcribes it (Gemini audio), echoes back what it heard, then routes it through the normal pipeline, so add/edit/ask all work hands-free.
 - **Smart photo (wine or food)**: Send a photo on its own (no command). A wine label gets a sommelier rundown; a photo of a dish gets a pairing recommendation drawn from your actual cellar (Open bottles first). Add a caption to ask a specific question. Read only, no cellar write.
 - **Open / Finish a bottle (`/status`)**: Pick a bottle (button, number, or name filter) and mark it Open, Finished, or Closed. Writes only the status column (A-N and O/P/Q untouched), with the same shifted-row identity guard as `/editwine`.
-- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
+
+- **Remove a bottle (`/delete`)**: Pick a bottle (button, number, or name filter), see its identity, and confirm a permanent removal on a second step. Deletes that exact row with the same shifted-row identity guard; the confirm is single-use so a stray tap can't delete.- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
 - **Resilient AI Pipeline**: Integrates the `google-genai` SDK with an automatic fallback chain (`gemini-3.1-flash-lite` → `gemma-4-31b` → `gemini-2.5-flash`) and exponential backoff to mitigate transient API errors.
 - **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via the system instructions within `sommelier_ai.py`.
 

@@ -253,5 +253,27 @@ class TestWebhookErrorHandling(unittest.TestCase):
         self.assertIn("שגיאה", sent_text)
 
 
+class TestWebhookDeleteRouting(unittest.TestCase):
+    """/delete and its callbacks reach the DeleteWine flow."""
+
+    def test_delete_command_routes_to_flow(self):
+        env = _make_environ(body={"message": {"text": "/delete", "chat": {"id": 999}}})
+        with patch("deletewine.DeleteWine.handle_message", return_value=True) as mock_h, \
+             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_h.assert_called_once()
+        mock_ask.assert_not_called()  # flow consumed it; no chat fallback
+
+    def test_delete_callback_routes_to_flow(self):
+        env = _make_environ(body={"callback_query": {
+            "id": "c1", "data": "delete:confirm:tok",
+            "message": {"chat": {"id": 999}, "message_id": 5}}})
+        with patch("deletewine.DeleteWine.handle_callback", return_value=True) as mock_cb:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_cb.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -153,6 +153,20 @@ class CellarBackend:
             raise RuntimeError(f"Set status failed: {result}")
         return result
 
+    def delete_wine(self, row: int, expect: dict) -> dict:
+        """Remove the entire *row* from the cellar. Raises on failure.
+
+        Destructive and irreversible. *expect* carries the bottle's original
+        identity (winery + wine_name); the Apps Script refuses the delete if that
+        row no longer matches, so a shifted row can't take the wrong bottle down.
+        """
+        result = self._post({
+            "action": "delete_wine", "row": row, "expect": expect,
+        })
+        if result.get("status") != "success":
+            raise RuntimeError(f"Cellar delete failed: {result}")
+        return result
+
     def _post(self, payload: dict) -> dict:
         if self._secret:
             payload = {**payload, "key": self._secret}

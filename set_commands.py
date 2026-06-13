@@ -25,6 +25,7 @@ BOT_COMMANDS = [
     {"command": "addwine", "description": "הוספת יין למרתף (תמונה או טקסט)"},
     {"command": "editwine", "description": "עריכת יין קיים במרתף"},
     {"command": "status", "description": "עדכון סטטוס בקבוק (נפתח / הסתיים)"},
+    {"command": "delete", "description": "מחיקת בקבוק מהמרתף"},
     {"command": "reset", "description": "ניקוי הזיכרון והתחלת שיחה חדשה"},
     {"command": "start", "description": "הסבר קצר ואיפוס"},
 ]
