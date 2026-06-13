@@ -14,5 +14,5 @@
 ## Definition of done
 - [x] All acceptance criteria met (code)
 - [x] Existing suite green + new logic covered with fakes (132 tests pass)
-- [ ] Live smoke: dish photo → cellar pairing; label photo → rundown; in-/addwine photo still ingests  ← **pending: your bot**
+- [x] Live smoke: dish photo → cellar pairing; label photo → rundown; in-/addwine photo still ingests (✅ 2026-06-13)
 - [x] Spec/plan updated if reality diverged (none did)
