@@ -39,4 +39,5 @@ specs/
 | 001 | Voice input + Tier-1 UX | approved | approved | approved | ✅ live-verified |
 | 002 | Photo → wine info | approved | approved | approved | ✅ live-verified |
 | 003 | Open / Finish a bottle | approved | approved | approved | ✅ live-verified |
-| 004 | Smart photo (wine vs food) | approved | approved | approved | code done; live smoke pending |
+| 004 | Smart photo (wine vs food) | approved | approved | approved | ✅ live-verified |
+| 005 | Remove a bottle (/delete) | approved | approved | approved | code done; redeploy + smoke pending |

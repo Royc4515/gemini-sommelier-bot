@@ -10,6 +10,8 @@
  *      appends rows, plus a tiny KV store for the /addwine + /editwine state.
  *      /editwine additionally lists rows (list_wines) and overwrites one row's
  *      columns A-N in place (update_wine), located by sheet row index.
+ *      /status sets one row's status cell (set_status); /delete removes a whole
+ *      row (delete_wine). Both reuse the same identity guard as update_wine.
  *
  * SETUP / REDEPLOY (must be done in the Apps Script editor, not by the bot):
  *   1. Open the "Sommelier Memory" Google Sheet -> Extensions -> Apps Script.
@@ -93,6 +95,7 @@ function doPost(e) {
       case "add_wine":       return _jsonOut(_addWine(payload));
       case "update_wine":    return _jsonOut(_updateWine(payload));
       case "set_status":     return _jsonOut(_setStatus(payload));
+      case "delete_wine":    return _jsonOut(_deleteWine(payload));
       case "addwine_state":  return _jsonOut(_stateSet(payload));
       default:               return _jsonOut(_memorySet(payload)); // memory (legacy)
     }
@@ -280,6 +283,30 @@ function _setStatus(payload) {
   if (col < 1) return {"error": "status column '" + STATUS_HEADER_MARKER + "' not found"};
   sheet.getRange(row, col, 1, 1).setValue(status);
   return {"status": "success", "row": row, "status_set": status};
+}
+
+function _deleteWine(payload) {
+  // payload: { row: <1-indexed>, expect: {winery, wine_name} }
+  // Removes the entire row. Guarded by identity so a shifted row is refused
+  // instead of deleting the wrong bottle. deleteRow shifts lower rows up; the
+  // bot clears its flow state right after, so no stale row index is reused.
+  var row = payload.row;
+  if (!row || row < 2) return {"error": "Bad row: " + row};
+
+  var sheet = _getCellarSheet();
+  if (row > sheet.getLastRow()) return {"error": "Row " + row + " out of range"};
+
+  var expect = payload.expect || {};
+  if (expect.winery !== undefined || expect.wine_name !== undefined) {
+    var current = sheet.getRange(row, 1, 1, 2).getValues()[0];
+    if (String(current[0]).trim() !== String(expect.winery || "").trim() ||
+        String(current[1]).trim() !== String(expect.wine_name || "").trim()) {
+      return {"error": "row_mismatch", "row": row};
+    }
+  }
+
+  sheet.deleteRow(row);
+  return {"status": "success", "row": row, "tab": sheet.getName()};
 }
 
 function _findHeaderColumn(sheet, headerName) {
