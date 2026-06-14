@@ -189,25 +189,34 @@ class TestSommelierAI(unittest.TestCase):
         used_model = self.mock_client.models.generate_content.call_args[1]["model"]
         self.assertFalse(used_model.startswith("gemma"))
 
-    # ---- intent classification (orchestrator) ---------------------------
+    # ---- request parsing (orchestrator) ---------------------------------
 
-    def test_classify_intent_parses_action(self):
+    def test_parse_request_parses_action_and_slots(self):
         mock_response = MagicMock()
-        mock_response.text = '{"intent": "set_status"}'
+        mock_response.text = '{"intent":"set_status","wine_row":3,"status":"Open","details":""}'
         self.mock_client.models.generate_content.return_value = mock_response
-        self.assertEqual(self.ai.classify_intent("פתחתי את הפלם"),
-                         {"intent": "set_status"})
+        out = self.ai.parse_request("פתחתי את הפלם", wines=[
+            {"row": 3, "status": "Closed", "values": ["Flam", "Classico", "", "2021"]}])
+        self.assertEqual(out, {"intent": "set_status", "wine_row": 3,
+                               "status": "Open", "details": ""})
 
-    def test_classify_intent_unknown_label_defaults_chat(self):
+    def test_parse_request_unknown_label_defaults_chat(self):
         mock_response = MagicMock()
-        mock_response.text = '{"intent": "banana"}'
+        mock_response.text = '{"intent": "banana", "wine_row": 5}'
         self.mock_client.models.generate_content.return_value = mock_response
-        self.assertEqual(self.ai.classify_intent("משהו"), {"intent": "chat"})
+        self.assertEqual(self.ai.parse_request("משהו"),
+                         {"intent": "chat", "wine_row": 0, "status": "", "details": ""})
 
-    def test_classify_intent_failure_defaults_chat(self):
+    def test_parse_request_bad_status_dropped(self):
+        mock_response = MagicMock()
+        mock_response.text = '{"intent":"set_status","wine_row":2,"status":"Bogus"}'
+        self.mock_client.models.generate_content.return_value = mock_response
+        self.assertEqual(self.ai.parse_request("x")["status"], "")
+
+    def test_parse_request_failure_defaults_chat(self):
         self.mock_client.models.generate_content.side_effect = Exception("boom")
         with patch("sys.stderr.write"):
-            self.assertEqual(self.ai.classify_intent("משהו"), {"intent": "chat"})
+            self.assertEqual(self.ai.parse_request("משהו")["intent"], "chat")
 
     def test_analyze_wine_photo_never_uses_gemma(self):
         self.mock_client.models.generate_content.side_effect = Exception("429 Quota Exceeded")

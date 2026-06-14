@@ -83,7 +83,8 @@ class TestWebhookSecurity(unittest.TestCase):
     def test_correct_secret_proceeds(self):
         env = _make_environ(body={"message": {"text": "hi", "chat": {"id": 999}}})
         with patch("telegram_client.TelegramClient.send_message"), \
-             patch("sommelier_ai.SommelierAI.classify_intent", return_value={"intent": "chat"}), \
+             patch("cellar.CellarBackend.list_wines", return_value=[]), \
+             patch("sommelier_ai.SommelierAI.parse_request", return_value={"intent": "chat", "wine_row": 0, "status": "", "details": ""}), \
              patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="inv"), \
              patch("sommelier_ai.SommelierAI.ask", return_value="reply"):
             status, _ = _call_app(env)
@@ -131,28 +132,37 @@ class TestWebhookAuthorization(unittest.TestCase):
         sent_text = mock_send.call_args[1]["text"]
         self.assertIn("פרטי", sent_text)
 
+    _CHAT_REQ = {"intent": "chat", "wine_row": 0, "status": "", "details": ""}
+
     def test_authorized_user_triggers_ai_flow(self):
         env = _make_environ(body={"message": {"text": "היי", "chat": {"id": 999}}})
         with patch("telegram_client.TelegramClient.send_message") as mock_send, \
-             patch("sommelier_ai.SommelierAI.classify_intent", return_value={"intent": "chat"}), \
+             patch("cellar.CellarBackend.list_wines", return_value=[]), \
+             patch("sommelier_ai.SommelierAI.parse_request", return_value=self._CHAT_REQ), \
              patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="inv"), \
              patch("sommelier_ai.SommelierAI.ask", return_value="wine advice") as mock_ask:
             _call_app(env)
         mock_ask.assert_called_once()
         mock_send.assert_called_once()
 
-    def test_action_intent_offers_flow_instead_of_answering(self):
+    def test_action_intent_acts_instead_of_answering(self):
         env = _make_environ(body={"message": {"text": "פתחתי את הפלם", "chat": {"id": 999}}})
+        wines = [{"row": 2, "status": "Closed",
+                  "values": ["Flam", "Classico", "אדום", "2021"] + [""] * 10}]
         with patch("telegram_client.TelegramClient.send_message") as mock_send, \
-             patch("sommelier_ai.SommelierAI.classify_intent", return_value={"intent": "set_status"}), \
+             patch("cellar.CellarBackend.list_wines", return_value=wines), \
              patch("cellar.CellarBackend.set_state"), \
+             patch("sommelier_ai.SommelierAI.parse_request",
+                   return_value={"intent": "set_status", "wine_row": 2,
+                                 "status": "Open", "details": ""}), \
              patch("sommelier_ai.SommelierAI.ask") as mock_ask:
             status, _ = _call_app(env)
         self.assertEqual(status, "200 OK")
-        mock_ask.assert_not_called()              # offer replaces the chat answer
+        mock_ask.assert_not_called()              # acted instead of chatting
         sent = " ".join(c.args[1] if len(c.args) > 1 else c.kwargs.get("text", "")
                         for c in mock_send.call_args_list)
-        self.assertIn("שאפתח את זה", sent)
+        self.assertIn("לסמן את", sent)
+        self.assertIn("Flam - Classico", sent)
 
 
 class TestWebhookVoice(unittest.TestCase):
@@ -166,7 +176,8 @@ class TestWebhookVoice(unittest.TestCase):
              patch("telegram_client.TelegramClient.send_chat_action"), \
              patch("telegram_client.TelegramClient.send_message") as mock_send, \
              patch("sommelier_ai.SommelierAI.transcribe_audio", return_value="מה לשתות עם דג") as mock_tx, \
-             patch("sommelier_ai.SommelierAI.classify_intent", return_value={"intent": "chat"}), \
+             patch("cellar.CellarBackend.list_wines", return_value=[]), \
+             patch("sommelier_ai.SommelierAI.parse_request", return_value={"intent": "chat", "wine_row": 0, "status": "", "details": ""}), \
              patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="inv"), \
              patch("sommelier_ai.SommelierAI.ask", return_value="reply") as mock_ask:
             status, _ = _call_app(env)
@@ -260,7 +271,9 @@ class TestWebhookErrorHandling(unittest.TestCase):
 
     def test_exception_in_flow_sends_error_message(self):
         env = _make_environ(body={"message": {"text": "היי", "chat": {"id": 999}}})
-        with patch("sommelier_ai.SommelierAI.classify_intent", return_value={"intent": "chat"}), \
+        with patch("cellar.CellarBackend.list_wines", return_value=[]), \
+             patch("sommelier_ai.SommelierAI.parse_request",
+                   return_value={"intent": "chat", "wine_row": 0, "status": "", "details": ""}), \
              patch("wine_inventory.WineInventory.get_formatted_inventory", side_effect=RuntimeError("boom")), \
              patch("telegram_client.TelegramClient.send_message") as mock_send:
             status, _ = _call_app(env)

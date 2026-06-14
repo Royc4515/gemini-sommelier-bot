@@ -231,12 +231,13 @@ def application(environ, start_response):
                 pass
             return _respond("200 OK", "OK")
 
-    # --- Orchestrator: free text -> offer a flow on a clear action, else chat ---
-    # Sits just above the chat fallback. On a confident action it offers a one-tap
-    # button (and consumes the turn); on chat (the conservative default) or any
-    # failure it returns False and the normal sommelier answer runs unchanged.
+    # --- Orchestrator: free text -> act on the request, else chat ---
+    # Sits just above the chat fallback. It resolves which bottle and what action
+    # the user meant and drives it (a one-tap confirm, or the right flow); on chat
+    # (the conservative default) or any failure it returns False and the normal
+    # sommelier answer runs unchanged.
     try:
-        if Orchestrator().maybe_offer(str(chat_id), text):
+        if Orchestrator().maybe_handle(str(chat_id), text):
             return _respond("200 OK", "OK")
     except Exception as exc:
         sys.stderr.write(f"ERROR: orchestrator failed: {exc}\n")

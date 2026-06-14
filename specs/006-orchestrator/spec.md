@@ -23,22 +23,33 @@ confirm step - so the router is safe by construction.
   original message as chat.
 
 ## Acceptance criteria
-1. A plain-text message (not a slash command, not inside any flow) is classified
-   into one of: `add_wine`, `edit_wine`, `set_status`, `delete_wine`, `chat`.
-2. An actionable intent → the bot sends a short Hebrew offer with two buttons:
-   start the flow / "רק שאלה" (answer as chat). The normal chat answer is NOT
-   also sent (the offer replaces it for that turn).
+> **v2 update (2026-06-14):** first cut only *offered* to start the generic flow,
+> so after confirming it didn't know which bottle/action the user meant. Revised
+> so the orchestrator parses the bottle + action and *acts*. Criteria below
+> reflect v2.
+
+1. A plain-text message (not a slash command, not inside any flow) is parsed in
+   one call into `{intent, wine_row, status, details}`, where `intent` is one of
+   `add_wine`/`edit_wine`/`set_status`/`delete_wine`/`chat` and `wine_row`
+   resolves WHICH bottle the user meant against the live cellar list (matching
+   across languages, e.g. "הפלם" → a "Flam" row).
+2. A resolved `set_status`/`delete_wine` → a single Hebrew confirm naming the
+   bottle ("לסמן את [Flam] כפתוח?" / "🗑️ למחוק את [Flam]?"); on confirm the write
+   happens directly (CellarBackend + identity guard), single-use token. The chat
+   answer is NOT also sent.
 3. `chat` (the conservative default) → falls through to the existing sommelier
-   answer, byte-for-byte unchanged.
-4. Tapping the start button begins that flow via its normal command entry
-   (reuses the tested `/command` path; no new start logic).
-5. Tapping "רק שאלה" answers the original message through the same chat path the
-   fallback uses (no duplicated context-assembly logic).
-6. Classifier failure, or any error, defaults to `chat`; the webhook always
-   returns HTTP 200.
-7. The classifier is conservative: questions, recommendations, inventory
-   queries, and general talk stay `chat`. Only a clear request to add/edit/
-   change-status/delete a bottle becomes an action.
+   answer, unchanged.
+4. `add_wine` → starts `/addwine` and feeds the description so it extracts at
+   once; `edit_wine` → starts `/editwine` pre-filtered to the bottle. A bottle
+   that could NOT be resolved → starts the flow's normal picker. All via the
+   tested `/command` entries.
+5. `set_status` with a known bottle but no status → status buttons; tapping one
+   writes it. Tapping "רק שאלה" on any confirm answers the original message via
+   the shared chat path (no duplicated context-assembly logic).
+6. Parse failure, or any error, defaults to `chat`; the webhook always returns
+   HTTP 200.
+7. Parsing is conservative: questions, recommendations, inventory queries, and
+   general talk stay `chat`. Only a clear add/edit/status/delete becomes an action.
 8. Router state is namespaced `orch:<chat_id>`; never collides with the flows.
 
 ## Non-goals
