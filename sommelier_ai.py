@@ -136,26 +136,32 @@ _EXTRACTION_PROMPT = (
 
 
 # ------------------------------------------------------------------
-# Intent classification (orchestrator) — route free text to a flow or chat
+# Request parsing (orchestrator) — intent + which bottle + status + details
 # ------------------------------------------------------------------
 _INTENT_LABELS = ("add_wine", "edit_wine", "set_status", "delete_wine", "chat")
-_INTENT_PROMPT = (
-    "Classify the user's Hebrew/English message into exactly ONE intent for a "
-    "wine-cellar assistant. Output JSON only: {\"intent\": \"<label>\"}.\n"
-    "Labels:\n"
-    "- add_wine: wants to ADD/register a new bottle to the cellar "
-    "(e.g. 'תוסיף יין', 'יש לי בקבוק חדש להכניס', 'add this wine').\n"
-    "- edit_wine: wants to CHANGE/correct fields of a bottle already in the "
-    "cellar (e.g. 'תעדכן את המחיר של הפלם', 'תקן את האזור').\n"
-    "- set_status: reports opening/finishing a bottle or changing its status "
+_STATUS_VALUES = ("Open", "Closed", "Finished")
+_REQUEST_PROMPT = (
+    "You route a wine-cellar assistant. Read the user's Hebrew/English message "
+    "and the numbered cellar list, then output JSON ONLY:\n"
+    '{"intent":"<label>","wine_row":<int>,"status":"<Open|Closed|Finished|>",'
+    '"details":"<string>"}\n'
+    "intent labels:\n"
+    "- add_wine: wants to ADD a new bottle (e.g. 'תוסיף יין', 'add this wine').\n"
+    "- edit_wine: wants to CHANGE/correct fields of an existing bottle "
+    "(e.g. 'תעדכן את המחיר של הפלם', 'תקן את האזור').\n"
+    "- set_status: opened/finished a bottle or changing its status "
     "(e.g. 'פתחתי את הפלם', 'סיימתי את הבקבוק', 'תסמן כפתוח').\n"
-    "- delete_wine: wants to REMOVE a bottle's record entirely "
-    "(e.g. 'תמחק את היין', 'תוריד את הפלם מהמרתף').\n"
-    "- chat: ANYTHING ELSE - questions, pairing/recommendation requests, asking "
-    "what is in the cellar, education, small talk (e.g. 'מה לשתות עם דג?', "
-    "'מה יש לי במרתף?', 'ספר לי על קברנה').\n"
-    "Be conservative: when in doubt, choose chat. Only pick an action when the "
-    "user clearly asks to add/edit/change-status/delete a bottle.\n"
+    "- delete_wine: REMOVE a bottle entirely ('תמחק את היין', 'תוריד מהמרתף').\n"
+    "- chat: ANYTHING ELSE - questions, pairing/recommendations, 'מה יש לי "
+    "במרתף', education, small talk. When in doubt, choose chat.\n"
+    "wine_row: if the user refers to a specific bottle in the list, copy its "
+    "'row N' number here (MATCH ACROSS LANGUAGES - 'הפלם' matches a 'Flam' "
+    "entry). Use 0 if no specific bottle, or none matches, or it is not "
+    "applicable (chat / add_wine).\n"
+    "status: only for set_status - 'פתחתי'/'לפתוח'->Open, "
+    "'סיימתי'/'גמרתי'/'נגמר'->Finished, 'לא נפתח'/'סגור'->Closed. Else \"\".\n"
+    "details: for add_wine, the wine description to add (copy the relevant part "
+    "of the message); for edit_wine, the requested change in words. Else \"\".\n"
     "Output the JSON object and nothing else."
 )
 
@@ -227,22 +233,29 @@ class SommelierAI:
             lambda model_name: self._single_generate(model_name, contents)
         )
 
-    def classify_intent(self, text: str) -> dict:
-        """Classify a free-text message into one orchestrator intent.
+    def parse_request(self, text: str, wines: list[dict] | None = None) -> dict:
+        """Parse a free-text message into an orchestrator request.
 
-        Returns ``{"intent": <label>}`` where label is one of _INTENT_LABELS.
-        Conservative and crash-proof: any error or unrecognized output falls
-        back to ``chat`` so the normal sommelier answer runs (constitution §5).
+        Returns ``{"intent", "wine_row", "status", "details"}``. *wines* is the
+        cellar list (from ``list_wines``) so the model can resolve which bottle
+        the user meant, matching across languages. Conservative and crash-proof:
+        any error or unrecognized output falls back to a plain ``chat`` request
+        so the normal sommelier answer runs (constitution §5).
         """
-        contents = [_INTENT_PROMPT, f"User message:\n{text}"]
+        listing = _format_wines_for_match(wines or [])
+        contents = [
+            _REQUEST_PROMPT,
+            f"Cellar bottles:\n{listing or '(empty)'}",
+            f"User message:\n{text}",
+        ]
         try:
             raw = self._call_with_retry(
                 lambda model_name: self._generate_json(model_name, contents)
             )
         except Exception as exc:
-            sys.stderr.write(f"ERROR: classify_intent failed: {exc}\n")
-            return {"intent": "chat"}
-        return {"intent": _parse_intent(raw)}
+            sys.stderr.write(f"ERROR: parse_request failed: {exc}\n")
+            return _CHAT_REQUEST.copy()
+        return _parse_request(raw)
 
     # ------------------------------------------------------------------
     # Public: /addwine extraction (multimodal or text)
@@ -417,34 +430,61 @@ class SommelierAI:
 
 
 # ----------------------------------------------------------------------
-# Defensive parsing for intent classification (orchestrator)
+# Defensive parsing for request parsing (orchestrator)
 # ----------------------------------------------------------------------
 
-def _parse_intent(raw: str) -> str:
-    """Pull a known intent label out of the model's response, else 'chat'.
+_CHAT_REQUEST = {"intent": "chat", "wine_row": 0, "status": "", "details": ""}
 
-    Tolerant of fenced/prose-wrapped JSON and of a model that just names the
-    label: we scan for any known label, defaulting to 'chat' (safe fall-through).
+
+def _format_wines_for_match(wines: list[dict]) -> str:
+    """Compact numbered listing the model uses to resolve which bottle is meant."""
+    lines = []
+    for w in wines:
+        row = w.get("row")
+        if not row:
+            continue
+        values = w.get("values") or []
+        winery = values[0] if len(values) > 0 else ""
+        name = values[1] if len(values) > 1 else ""
+        vintage = values[3] if len(values) > 3 else ""
+        status = w.get("status") or ""
+        lines.append(f"row {row}: {winery} - {name} ({vintage}) [{status}]")
+    return "\n".join(lines)
+
+
+def _parse_request(raw: str) -> dict:
+    """Parse the orchestrator response, defaulting unknown fields safely.
+
+    Tolerant of fenced/prose-wrapped JSON. An unparseable response or an
+    unrecognized intent yields a plain ``chat`` request (safe fall-through).
     """
     if not raw or not raw.strip():
-        return "chat"
+        return _CHAT_REQUEST.copy()
     text = raw.strip()
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
     if fence:
         text = fence.group(1).strip()
     try:
         data = json.loads(text)
-        if isinstance(data, dict):
-            label = str(data.get("intent", "")).strip()
-            if label in _INTENT_LABELS:
-                return label
     except (json.JSONDecodeError, ValueError):
-        pass
-    # Fallback: the label may appear bare in the text (non-JSON-mode model).
-    for label in _INTENT_LABELS:
-        if label in text:
-            return label
-    return "chat"
+        return _CHAT_REQUEST.copy()
+    if not isinstance(data, dict):
+        return _CHAT_REQUEST.copy()
+
+    intent = str(data.get("intent", "")).strip()
+    if intent not in _INTENT_LABELS:
+        return _CHAT_REQUEST.copy()
+
+    try:
+        wine_row = int(data.get("wine_row") or 0)
+    except (TypeError, ValueError):
+        wine_row = 0
+    status = str(data.get("status", "")).strip()
+    if status not in _STATUS_VALUES:
+        status = ""
+    details = str(data.get("details", "")).strip()
+    return {"intent": intent, "wine_row": wine_row,
+            "status": status, "details": details}
 
 
 # ----------------------------------------------------------------------
