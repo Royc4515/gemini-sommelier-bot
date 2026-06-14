@@ -189,6 +189,26 @@ class TestSommelierAI(unittest.TestCase):
         used_model = self.mock_client.models.generate_content.call_args[1]["model"]
         self.assertFalse(used_model.startswith("gemma"))
 
+    # ---- intent classification (orchestrator) ---------------------------
+
+    def test_classify_intent_parses_action(self):
+        mock_response = MagicMock()
+        mock_response.text = '{"intent": "set_status"}'
+        self.mock_client.models.generate_content.return_value = mock_response
+        self.assertEqual(self.ai.classify_intent("פתחתי את הפלם"),
+                         {"intent": "set_status"})
+
+    def test_classify_intent_unknown_label_defaults_chat(self):
+        mock_response = MagicMock()
+        mock_response.text = '{"intent": "banana"}'
+        self.mock_client.models.generate_content.return_value = mock_response
+        self.assertEqual(self.ai.classify_intent("משהו"), {"intent": "chat"})
+
+    def test_classify_intent_failure_defaults_chat(self):
+        self.mock_client.models.generate_content.side_effect = Exception("boom")
+        with patch("sys.stderr.write"):
+            self.assertEqual(self.ai.classify_intent("משהו"), {"intent": "chat"})
+
     def test_analyze_wine_photo_never_uses_gemma(self):
         self.mock_client.models.generate_content.side_effect = Exception("429 Quota Exceeded")
         with patch("sys.stderr.write"):
