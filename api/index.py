@@ -16,6 +16,8 @@ from addwine import AddWine               # noqa: E402
 from editwine import EditWine             # noqa: E402
 from statuswine import StatusWine         # noqa: E402
 from deletewine import DeleteWine          # noqa: E402
+from orchestrator import Orchestrator      # noqa: E402
+from chat_flow import answer_chat          # noqa: E402
 from set_commands import BOT_COMMANDS     # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
@@ -72,7 +74,8 @@ def application(environ, start_response):
             if not AddWine().handle_callback(callback):
                 if not EditWine().handle_callback(callback):
                     if not StatusWine().handle_callback(callback):
-                        DeleteWine().handle_callback(callback)
+                        if not DeleteWine().handle_callback(callback):
+                            Orchestrator().handle_callback(callback)
         except Exception:
             pass
         return _respond("200 OK", "OK")
@@ -228,47 +231,18 @@ def application(environ, start_response):
                 pass
             return _respond("200 OK", "OK")
 
-    # --- Execute flow ---
+    # --- Orchestrator: free text -> offer a flow on a clear action, else chat ---
+    # Sits just above the chat fallback. On a confident action it offers a one-tap
+    # button (and consumes the turn); on chat (the conservative default) or any
+    # failure it returns False and the normal sommelier answer runs unchanged.
     try:
-        # Native "typing…" while we assemble context and call the model.
-        try:
-            TelegramClient().send_chat_action(chat_id, "typing")
-        except Exception:
-            pass
-
-        memory = ChatMemory()
-        history, long_term_summary = memory.get_context(str(chat_id))
-
-        inventory = WineInventory()
-        inventory_text = inventory.get_formatted_inventory()
-
-        ai = SommelierAI()
-        answer = ai.ask(
-            user_message=text,
-            inventory_context=inventory_text,
-            history=history,
-            long_term_summary=long_term_summary,
-        )
-
-        # Pass the freshly-read context so save_turn skips a webhook round trip.
-        memory.save_turn(
-            str(chat_id), text, answer,
-            history=history, long_term_summary=long_term_summary,
-        )
-
-        telegram = TelegramClient()
-        telegram.send_message(chat_id=chat_id, text=answer)
+        if Orchestrator().maybe_offer(str(chat_id), text):
+            return _respond("200 OK", "OK")
     except Exception as exc:
-        sys.stderr.write(f"ERROR: sommelier flow failed: {exc}\n")
-        # Best-effort error notification to the user (no internal detail leaked)
-        try:
-            TelegramClient().send_message(
-                chat_id=chat_id,
-                text="⚠️ שגיאה פנימית. נסה שוב בעוד רגע.",
-            )
-        except Exception:
-            pass
+        sys.stderr.write(f"ERROR: orchestrator failed: {exc}\n")
 
+    # --- Default: answer as the sommelier (shared chat path) ---
+    answer_chat(chat_id, text)
     return _respond("200 OK", "OK")
 
 # Vercel zero-configuration requires an `app` variable for WSGI applications.

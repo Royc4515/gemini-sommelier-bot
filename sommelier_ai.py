@@ -135,6 +135,31 @@ _EXTRACTION_PROMPT = (
 )
 
 
+# ------------------------------------------------------------------
+# Intent classification (orchestrator) — route free text to a flow or chat
+# ------------------------------------------------------------------
+_INTENT_LABELS = ("add_wine", "edit_wine", "set_status", "delete_wine", "chat")
+_INTENT_PROMPT = (
+    "Classify the user's Hebrew/English message into exactly ONE intent for a "
+    "wine-cellar assistant. Output JSON only: {\"intent\": \"<label>\"}.\n"
+    "Labels:\n"
+    "- add_wine: wants to ADD/register a new bottle to the cellar "
+    "(e.g. 'תוסיף יין', 'יש לי בקבוק חדש להכניס', 'add this wine').\n"
+    "- edit_wine: wants to CHANGE/correct fields of a bottle already in the "
+    "cellar (e.g. 'תעדכן את המחיר של הפלם', 'תקן את האזור').\n"
+    "- set_status: reports opening/finishing a bottle or changing its status "
+    "(e.g. 'פתחתי את הפלם', 'סיימתי את הבקבוק', 'תסמן כפתוח').\n"
+    "- delete_wine: wants to REMOVE a bottle's record entirely "
+    "(e.g. 'תמחק את היין', 'תוריד את הפלם מהמרתף').\n"
+    "- chat: ANYTHING ELSE - questions, pairing/recommendation requests, asking "
+    "what is in the cellar, education, small talk (e.g. 'מה לשתות עם דג?', "
+    "'מה יש לי במרתף?', 'ספר לי על קברנה').\n"
+    "Be conservative: when in doubt, choose chat. Only pick an action when the "
+    "user clearly asks to add/edit/change-status/delete a bottle.\n"
+    "Output the JSON object and nothing else."
+)
+
+
 class SommelierAI:
     """Façade over the Gemini generative model.
 
@@ -201,6 +226,23 @@ class SommelierAI:
         return self._call_with_retry(
             lambda model_name: self._single_generate(model_name, contents)
         )
+
+    def classify_intent(self, text: str) -> dict:
+        """Classify a free-text message into one orchestrator intent.
+
+        Returns ``{"intent": <label>}`` where label is one of _INTENT_LABELS.
+        Conservative and crash-proof: any error or unrecognized output falls
+        back to ``chat`` so the normal sommelier answer runs (constitution §5).
+        """
+        contents = [_INTENT_PROMPT, f"User message:\n{text}"]
+        try:
+            raw = self._call_with_retry(
+                lambda model_name: self._generate_json(model_name, contents)
+            )
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: classify_intent failed: {exc}\n")
+            return {"intent": "chat"}
+        return {"intent": _parse_intent(raw)}
 
     # ------------------------------------------------------------------
     # Public: /addwine extraction (multimodal or text)
@@ -372,6 +414,37 @@ class SommelierAI:
                         continue
                     raise
         raise RuntimeError("All fallback models exhausted due to quota/rate limits.") from last_error
+
+
+# ----------------------------------------------------------------------
+# Defensive parsing for intent classification (orchestrator)
+# ----------------------------------------------------------------------
+
+def _parse_intent(raw: str) -> str:
+    """Pull a known intent label out of the model's response, else 'chat'.
+
+    Tolerant of fenced/prose-wrapped JSON and of a model that just names the
+    label: we scan for any known label, defaulting to 'chat' (safe fall-through).
+    """
+    if not raw or not raw.strip():
+        return "chat"
+    text = raw.strip()
+    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            label = str(data.get("intent", "")).strip()
+            if label in _INTENT_LABELS:
+                return label
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Fallback: the label may appear bare in the text (non-JSON-mode model).
+    for label in _INTENT_LABELS:
+        if label in text:
+            return label
+    return "chat"
 
 
 # ----------------------------------------------------------------------

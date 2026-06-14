@@ -41,3 +41,4 @@ specs/
 | 003 | Open / Finish a bottle | approved | approved | approved | ✅ live-verified |
 | 004 | Smart photo (wine vs food) | approved | approved | approved | ✅ live-verified |
 | 005 | Remove a bottle (/delete) | approved | approved | approved | code done; redeploy + smoke pending |
+| 006 | Orchestrator (NL router) | approved | approved | approved | code done; live smoke pending |
