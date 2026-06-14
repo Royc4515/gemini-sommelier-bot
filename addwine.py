@@ -26,6 +26,7 @@ from cellar import (
     build_row,
     display_name,
 )
+from cellar_picker import disable_buttons
 from sommelier_ai import SommelierAI
 from telegram_client import TelegramClient
 
@@ -262,10 +263,7 @@ class AddWine:
         )
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
-        if message_id is not None:
-            self.telegram.edit_message_reply_markup(
-                chat_id, message_id, reply_markup={"inline_keyboard": []}
-            )
+        disable_buttons(self.telegram, chat_id, message_id)
 
 
 # ======================================================================
