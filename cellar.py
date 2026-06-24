@@ -195,6 +195,20 @@ def display_name(record: dict) -> str:
     return f"{winery} - {name}" if winery else name
 
 
+def expect_from_state(state: dict) -> dict:
+    """The shifted-row identity guard for a write flow's confirm step.
+
+    Every stateful write flow (/editwine, /status, /delete, and the
+    orchestrator) stashes the chosen bottle's original winery / wine name under
+    ``orig_winery`` / ``orig_wine_name`` when it enters its confirm step. This
+    projects that state back onto the ``expect`` dict that
+    ``CellarBackend.update_wine`` / ``set_status`` / ``delete_wine`` verify, so
+    a row that shifted since it was listed is refused instead of clobbered.
+    """
+    return {"winery": state.get("orig_winery", ""),
+            "wine_name": state.get("orig_wine_name", "")}
+
+
 # ======================================================================
 # Lenient 'key: value' fill parser (each flow passes its own label table)
 # ======================================================================

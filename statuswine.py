@@ -21,7 +21,7 @@ flows.
 import sys
 import uuid
 
-from cellar import CellarBackend
+from cellar import CellarBackend, expect_from_state
 from cellar_picker import (
     STATUS_LABELS,
     disable_buttons,
@@ -212,9 +212,7 @@ class StatusWine:
 
         try:
             self.backend.set_status(
-                state["row"], value,
-                expect={"winery": state.get("orig_winery", ""),
-                        "wine_name": state.get("orig_wine_name", "")},
+                state["row"], value, expect=expect_from_state(state),
             )
         except Exception as exc:
             sys.stderr.write(f"ERROR: set_status failed: {exc}\n")

@@ -22,7 +22,8 @@ import sys
 import uuid
 
 from addwine import AddWine
-from cellar import CellarBackend, display_name
+from cellar import CellarBackend, display_name, expect_from_state
+from cellar_picker import disable_buttons
 from chat_flow import answer_chat
 from deletewine import DeleteWine
 from editwine import EditWine
@@ -185,7 +186,7 @@ class Orchestrator:
         elif action == "delete":
             self._clear(chat_id)
             try:
-                self.backend.delete_wine(state["row"], expect=self._expect(state))
+                self.backend.delete_wine(state["row"], expect=expect_from_state(state))
             except Exception as exc:
                 sys.stderr.write(f"ERROR: orchestrator delete failed: {exc}\n")
                 self.telegram.send_message(
@@ -199,7 +200,7 @@ class Orchestrator:
             return
         self._clear(chat_id)
         try:
-            self.backend.set_status(state["row"], value, expect=self._expect(state))
+            self.backend.set_status(state["row"], value, expect=expect_from_state(state))
         except Exception as exc:
             sys.stderr.write(f"ERROR: orchestrator set_status failed: {exc}\n")
             self.telegram.send_message(
@@ -240,11 +241,6 @@ class Orchestrator:
         return token
 
     @staticmethod
-    def _expect(state: dict) -> dict:
-        return {"winery": state.get("orig_winery", ""),
-                "wine_name": state.get("orig_wine_name", "")}
-
-    @staticmethod
     def _valid(state: dict | None, token: str) -> bool:
         return bool(state and state.get("flow") == "orch"
                     and token and state.get("token") == token)
@@ -262,13 +258,7 @@ class Orchestrator:
             pass
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
-        if message_id is not None:
-            try:
-                self.telegram.edit_message_reply_markup(
-                    chat_id, message_id, reply_markup={"inline_keyboard": []}
-                )
-            except Exception:
-                pass
+        disable_buttons(self.telegram, chat_id, message_id)
 
 
 # ======================================================================

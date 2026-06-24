@@ -22,7 +22,7 @@ flows.
 import sys
 import uuid
 
-from cellar import CellarBackend
+from cellar import CellarBackend, expect_from_state
 from cellar_picker import (
     disable_buttons,
     entry_name,
@@ -209,9 +209,7 @@ class DeleteWine:
 
         try:
             self.backend.delete_wine(
-                state["row"],
-                expect={"winery": state.get("orig_winery", ""),
-                        "wine_name": state.get("orig_wine_name", "")},
+                state["row"], expect=expect_from_state(state),
             )
         except Exception as exc:
             sys.stderr.write(f"ERROR: delete_wine failed: {exc}\n")

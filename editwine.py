@@ -34,6 +34,7 @@ from cellar import (
     apply_fill,
     build_row,
     display_name,
+    expect_from_state,
 )
 from cellar_picker import (
     disable_buttons,
@@ -304,9 +305,7 @@ class EditWine:
         row = build_row(rec)
         try:
             self.backend.update_wine(
-                state["row"], row,
-                expect={"winery": state.get("orig_winery", ""),
-                        "wine_name": state.get("orig_wine_name", "")},
+                state["row"], row, expect=expect_from_state(state),
             )
         except Exception as exc:
             sys.stderr.write(f"ERROR: cellar update failed: {exc}\n")
