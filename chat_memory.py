@@ -8,12 +8,9 @@ Layer 1 — active_history: Full message log for the current session.
 Layer 2 — long_term_summary: AI-compressed summary that survives across sessions.
 """
 
-import json
-import os
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
+
+from apps_script_client import AppsScriptClient
 
 
 class ChatMemory:
@@ -39,10 +36,9 @@ class ChatMemory:
     )
 
     def __init__(self):
-        # We fail fast if the environment variable isn't set
-        self._webhook_url = os.environ.get("SHEETS_MEMORY_URL", "").strip()
-        # Shared secret gating the Apps Script Web App (see apps_script.js).
-        self._secret = os.environ.get("SHEETS_SECRET", "").strip()
+        # Same Apps Script deployment + secret the cellar talks to (one auth
+        # path). A memory read is quick, so a tighter timeout than cellar writes.
+        self._api = AppsScriptClient(timeout=5)
 
     # ------------------------------------------------------------------
     # Public API
@@ -54,7 +50,7 @@ class ChatMemory:
         If the session has expired, the active history is summarised into the
         long-term summary before being cleared.
         """
-        if not self._webhook_url:
+        if not self._api.configured:
             return [], ""
 
         try:
@@ -91,7 +87,7 @@ class ChatMemory:
         ``get_context`` call earlier in the same request), the read is skipped —
         saving a webhook round trip. Otherwise the document is fetched first.
         """
-        if not self._webhook_url:
+        if not self._api.configured:
             return
 
         if history is None or long_term_summary is None:
@@ -122,7 +118,7 @@ class ChatMemory:
 
     def clear(self, chat_id: str) -> None:
         """Erase both memory layers for *chat_id*."""
-        if not self._webhook_url:
+        if not self._api.configured:
             return
         
         try:
@@ -182,34 +178,17 @@ class ChatMemory:
     # ------------------------------------------------------------------
 
     def _fetch_document(self, chat_id: str) -> dict:
-        """GET history from Apps Script Webhook."""
-        url = f"{self._webhook_url}?chat_id={chat_id}"
-        if self._secret:
-            url += f"&key={urllib.parse.quote(self._secret)}"
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        """GET history from the Apps Script webhook."""
+        return self._api.get_json({"chat_id": chat_id})
 
     def _write_document(self, chat_id: str, data: dict) -> None:
-        """POST updated history to Apps Script Webhook."""
-        payload = {
+        """POST updated history to the Apps Script webhook (secret added by the client)."""
+        self._api.post_json({
             "chat_id": chat_id,
             "active_history": data.get("active_history", []),
             "long_term_summary": data.get("long_term_summary", ""),
-            "updated_at": data.get("updated_at", time.time())
-        }
-        if self._secret:
-            payload["key"] = self._secret
-        encoded_data = json.dumps(payload).encode("utf-8")
-        
-        req = urllib.request.Request(
-            self._webhook_url,
-            data=encoded_data,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            resp.read()
+            "updated_at": data.get("updated_at", time.time()),
+        })
 
 
 def _history_to_text(history: list[dict]) -> str:

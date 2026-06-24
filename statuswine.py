@@ -21,7 +21,17 @@ flows.
 import sys
 import uuid
 
-from cellar import CellarBackend, display_name
+from cellar import CellarBackend, expect_from_state
+from cellar_picker import (
+    STATUS_LABELS,
+    disable_buttons,
+    entry_name,
+    lightweight_entries,
+    list_keyboard,
+    render_list,
+    resolve_selection,
+    status_label,
+)
 from telegram_client import TelegramClient
 
 
@@ -30,16 +40,8 @@ _AWAIT_SELECT = "STATUS_AWAIT_SELECT"
 _CHOOSE = "STATUS_CHOOSE"
 _FLOW = "statuswine"
 
-# How many wines to list / when to show tap-buttons (mirrors editwine).
-_MAX_LIST = 60
-_PICK_MAX = 12
-
-# Status value -> Hebrew label (values stored in English to match the sheet).
-_STATUS_LABELS = {
-    "Open": "פתוח 🍷",
-    "Closed": "סגור",
-    "Finished": "הסתיים",
-}
+# Header for the picker list (the only per-flow text the shared renderer needs).
+_LIST_HEADER = "מרתף 🍷 בחר בקבוק לעדכון סטטוס: שלח מספר, או הקלד מילה לסינון:\n"
 
 
 class StatusWine:
@@ -129,18 +131,7 @@ class StatusWine:
             return
 
         # Lightweight entries: identity + status + display bits (no A-N record).
-        entries = []
-        for w in wines:
-            if not w.get("row"):
-                continue
-            values = w.get("values") or []
-            entries.append({
-                "row": w["row"],
-                "status": w.get("status") or "",
-                "winery": values[0] if len(values) > 0 else "",
-                "wine_name": values[1] if len(values) > 1 else "",
-                "vintage": values[3] if len(values) > 3 else "",
-            })
+        entries = lightweight_entries(wines)
         shown = list(range(len(entries)))
         self.backend.set_state(self._key(chat_id), {
             "state": _AWAIT_SELECT, "flow": _FLOW, "wines": entries, "shown": shown,
@@ -152,28 +143,22 @@ class StatusWine:
 
     def _on_select(self, chat_id: str, state: dict, text: str) -> None:
         entries = state["wines"]
-        if text.isdigit():
-            shown = state.get("shown") or list(range(len(entries)))
-            n = int(text)
-            if not (1 <= n <= len(shown)):
-                self.telegram.send_message(chat_id, "מספר לא תקין. בחר מהרשימה, או /cancel.")
-                return
-            self._enter_choose(chat_id, entries[shown[n - 1]])
-            return
-
-        needle = text.casefold()
-        shown = [i for i, e in enumerate(entries) if needle in _entry_name(e).casefold()]
-        if not shown:
+        kind, payload = resolve_selection(entries, state.get("shown"), text)
+        if kind == "invalid":
+            self.telegram.send_message(chat_id, "מספר לא תקין. בחר מהרשימה, או /cancel.")
+        elif kind == "pick":
+            self._enter_choose(chat_id, payload)
+        elif kind == "empty":
             self.telegram.send_message(
                 chat_id, f"לא נמצא יין שמתאים ל'{text}'. נסה שוב, או /cancel."
             )
-            return
-        state["shown"] = shown
-        self.backend.set_state(self._key(chat_id), state)
-        self.telegram.send_message(
-            chat_id, _render_list(entries, shown),
-            reply_markup=_list_keyboard(entries, shown),
-        )
+        elif kind == "filter":
+            state["shown"] = payload
+            self.backend.set_state(self._key(chat_id), state)
+            self.telegram.send_message(
+                chat_id, _render_list(entries, payload),
+                reply_markup=_list_keyboard(entries, payload),
+            )
 
     def _pick(self, chat_id: str, state: dict | None, row_str: str, message_id) -> None:
         if not state or state.get("flow") != _FLOW or state.get("state") != _AWAIT_SELECT:
@@ -193,7 +178,7 @@ class StatusWine:
 
     def _enter_choose(self, chat_id: str, entry: dict) -> None:
         token = uuid.uuid4().hex
-        name = _entry_name(entry)
+        name = entry_name(entry)
         self.backend.set_state(self._key(chat_id), {
             "state": _CHOOSE, "flow": _FLOW,
             "row": entry["row"], "name": name,
@@ -201,7 +186,7 @@ class StatusWine:
             "orig_wine_name": entry.get("wine_name", ""),
             "token": token,
         })
-        current = _STATUS_LABELS.get(entry.get("status"), entry.get("status") or "-")
+        current = status_label(entry.get("status"))
         self.telegram.send_message(
             chat_id,
             f"🍷 {name}\nסטטוס נוכחי: {current}\nבחר סטטוס חדש:",
@@ -218,7 +203,7 @@ class StatusWine:
             self._disable_buttons(chat_id, message_id)
             self.telegram.send_message(chat_id, "כבר טופל.")
             return
-        if value not in _STATUS_LABELS:
+        if value not in STATUS_LABELS:
             return
 
         # Consume the token first so a near-simultaneous second tap is a no-op.
@@ -227,9 +212,7 @@ class StatusWine:
 
         try:
             self.backend.set_status(
-                state["row"], value,
-                expect={"winery": state.get("orig_winery", ""),
-                        "wine_name": state.get("orig_wine_name", "")},
+                state["row"], value, expect=expect_from_state(state),
             )
         except Exception as exc:
             sys.stderr.write(f"ERROR: set_status failed: {exc}\n")
@@ -239,7 +222,7 @@ class StatusWine:
             return
 
         self.telegram.send_message(
-            chat_id, f"✅ {state.get('name', '')}: {_STATUS_LABELS[value]}"
+            chat_id, f"✅ {state.get('name', '')}: {STATUS_LABELS[value]}"
         )
 
     # ---- helpers ----------------------------------------------------------
@@ -252,44 +235,19 @@ class StatusWine:
         self.backend.clear_state(self._key(chat_id))
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
-        if message_id is not None:
-            self.telegram.edit_message_reply_markup(
-                chat_id, message_id, reply_markup={"inline_keyboard": []}
-            )
+        disable_buttons(self.telegram, chat_id, message_id)
 
 
 # ======================================================================
-# Pure functions
+# Pure functions — thin per-flow adapters over the shared cellar_picker.
 # ======================================================================
-
-def _entry_name(entry: dict) -> str:
-    return display_name({"winery": entry.get("winery"),
-                         "wine_name": entry.get("wine_name")})
-
 
 def _render_list(entries: list[dict], shown: list[int]) -> str:
-    lines = ["מרתף 🍷 בחר בקבוק לעדכון סטטוס: שלח מספר, או הקלד מילה לסינון:\n"]
-    for display_num, idx in enumerate(shown[:_MAX_LIST], start=1):
-        e = entries[idx]
-        vintage = e.get("vintage") or "-"
-        status = _STATUS_LABELS.get(e.get("status"), e.get("status") or "-")
-        lines.append(f"{display_num}. {_entry_name(e)} ({vintage}) [{status}]")
-    if len(shown) > _MAX_LIST:
-        lines.append(f"\n...ועוד {len(shown) - _MAX_LIST}. סנן בעזרת מילה כדי לצמצם.")
-    lines.append("\n/cancel לביטול.")
-    return "\n".join(lines)
+    return render_list(entries, shown, _LIST_HEADER)
 
 
 def _list_keyboard(entries: list[dict], shown: list[int]) -> dict | None:
-    if not shown or len(shown) > _PICK_MAX:
-        return None
-    rows = []
-    for idx in shown:
-        e = entries[idx]
-        vintage = e.get("vintage") or "-"
-        label = f"{_entry_name(e)} ({vintage})"
-        rows.append([{"text": label[:60], "callback_data": f"status:pick:{e['row']}"}])
-    return {"inline_keyboard": rows}
+    return list_keyboard(entries, shown, "status:pick:")
 
 
 def _status_keyboard(token: str) -> dict:

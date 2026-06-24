@@ -34,6 +34,13 @@ from cellar import (
     apply_fill,
     build_row,
     display_name,
+    expect_from_state,
+)
+from cellar_picker import (
+    disable_buttons,
+    list_keyboard,
+    render_list,
+    resolve_selection,
 )
 from telegram_client import TelegramClient
 
@@ -93,12 +100,10 @@ _FIELD_LABELS = {
     "tasting_notes": "הערות טעימה",
 }
 
-# How many wines to show per list page (keeps the picker scannable).
-_MAX_LIST = 60
-# Only render tap-to-select buttons when the current view is this small;
-# otherwise a big cellar would produce an unwieldy keyboard (numbers/filter
-# still work). See spec 001 D3.
-_PICK_MAX = 12
+# Header for the picker list (the only per-flow text the shared renderer needs).
+# /editwine carries the full A-N record, so its picker reads name/vintage/status
+# off rec via the accessors below; the list/keyboard caps live in cellar_picker.
+_LIST_HEADER = "מרתף 🍷 בחר יין לעריכה: שלח מספר, או הקלד מילה לסינון (וגם אפשר ללחוץ על כפתור אם מופיע):\n"
 
 
 class EditWine:
@@ -213,33 +218,24 @@ class EditWine:
 
     def _on_select(self, chat_id: str, state: dict, text: str) -> None:
         entries = state["wines"]
-
-        if text.isdigit():
-            shown = state.get("shown") or list(range(len(entries)))
-            n = int(text)
-            if not (1 <= n <= len(shown)):
-                self.telegram.send_message(chat_id, "מספר לא תקין. בחר מהרשימה, או /cancel.")
-                return
-            self._enter_edit(chat_id, entries[shown[n - 1]])
-            return
-
-        # Not a number -> treat as a filter and re-show the narrowed list.
-        needle = text.casefold()
-        shown = [
-            i for i, e in enumerate(entries)
-            if needle in display_name(e["rec"]).casefold()
-        ]
-        if not shown:
+        kind, payload = resolve_selection(
+            entries, state.get("shown"), text, name_of=_rec_name
+        )
+        if kind == "invalid":
+            self.telegram.send_message(chat_id, "מספר לא תקין. בחר מהרשימה, או /cancel.")
+        elif kind == "pick":
+            self._enter_edit(chat_id, payload)
+        elif kind == "empty":
             self.telegram.send_message(
                 chat_id, f"לא נמצא יין שמתאים ל'{text}'. נסה שוב, או /cancel."
             )
-            return
-        state["shown"] = shown
-        self.backend.set_state(self._key(chat_id), state)
-        self.telegram.send_message(
-            chat_id, _render_list(entries, shown),
-            reply_markup=_list_keyboard(entries, shown),
-        )
+        elif kind == "filter":
+            state["shown"] = payload
+            self.backend.set_state(self._key(chat_id), state)
+            self.telegram.send_message(
+                chat_id, _render_list(entries, payload),
+                reply_markup=_list_keyboard(entries, payload),
+            )
 
     def _pick(self, chat_id: str, state: dict | None, row_str: str,
               message_id) -> None:
@@ -309,9 +305,7 @@ class EditWine:
         row = build_row(rec)
         try:
             self.backend.update_wine(
-                state["row"], row,
-                expect={"winery": state.get("orig_winery", ""),
-                        "wine_name": state.get("orig_wine_name", "")},
+                state["row"], row, expect=expect_from_state(state),
             )
         except Exception as exc:
             sys.stderr.write(f"ERROR: cellar update failed: {exc}\n")
@@ -336,10 +330,7 @@ class EditWine:
         self.backend.clear_state(self._key(chat_id))
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
-        if message_id is not None:
-            self.telegram.edit_message_reply_markup(
-                chat_id, message_id, reply_markup={"inline_keyboard": []}
-            )
+        disable_buttons(self.telegram, chat_id, message_id)
 
 
 # ======================================================================
@@ -375,34 +366,33 @@ def _format_date(val) -> str:
     return s
 
 
+# Accessors that read the picker's name/vintage/status off /editwine's rec-shaped
+# entry ({row, status, rec}). /editwine shows the raw (English) status in its
+# list, so status_of is the bare value, not a Hebrew label.
+def _rec_name(entry: dict) -> str:
+    return display_name(entry["rec"])
+
+
+def _rec_vintage(entry: dict) -> str:
+    return entry["rec"].get("vintage") or "-"
+
+
+def _rec_status(entry: dict) -> str:
+    return entry.get("status") or "-"
+
+
 def _render_list(entries: list[dict], shown: list[int]) -> str:
-    lines = ["מרתף 🍷 בחר יין לעריכה: שלח מספר, או הקלד מילה לסינון (וגם אפשר ללחוץ על כפתור אם מופיע):\n"]
-    for display_num, idx in enumerate(shown[:_MAX_LIST], start=1):
-        e = entries[idx]
-        rec = e["rec"]
-        vintage = rec.get("vintage") or "-"
-        status = e.get("status") or "-"
-        lines.append(f"{display_num}. {display_name(rec)} ({vintage}) [{status}]")
-    if len(shown) > _MAX_LIST:
-        lines.append(f"\n...ועוד {len(shown) - _MAX_LIST}. סנן בעזרת מילה כדי לצמצם.")
-    lines.append("\n/cancel לביטול.")
-    return "\n".join(lines)
+    return render_list(
+        entries, shown, _LIST_HEADER,
+        name_of=_rec_name, vintage_of=_rec_vintage, status_of=_rec_status,
+    )
 
 
 def _list_keyboard(entries: list[dict], shown: list[int]) -> dict | None:
-    """Inline keyboard of tap-to-select wine buttons, or None when the view is
-    too large to show buttons for (numbers/filter remain the path then)."""
-    if not shown or len(shown) > _PICK_MAX:
-        return None
-    rows = []
-    for idx in shown:
-        e = entries[idx]
-        rec = e["rec"]
-        vintage = rec.get("vintage") or "-"
-        label = f"{display_name(rec)} ({vintage})"
-        rows.append([{"text": label[:60],
-                      "callback_data": f"editwine:pick:{e['row']}"}])
-    return {"inline_keyboard": rows}
+    return list_keyboard(
+        entries, shown, "editwine:pick:",
+        name_of=_rec_name, vintage_of=_rec_vintage,
+    )
 
 
 def _render_edit(rec: dict, status: str) -> str:

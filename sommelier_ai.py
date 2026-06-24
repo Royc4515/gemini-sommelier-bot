@@ -4,165 +4,36 @@ sommelier_ai.py — Logic Layer
 Wraps the Google GenAI client (primary model gemini-3.1-flash-lite, with a
 fallback chain — see FALLBACK_MODELS) with domain-specific system instructions
 for the Wine Sommelier persona.
+
+This module is the model-orchestration façade: client setup, the fallback
+chain, retry/backoff, and the per-task call shapes. The instruction text lives
+in ``sommelier_prompts``; the defensive output parsers live in
+``sommelier_parsing``.
 """
 
-import json
 import os
-import re
 import sys
 import time
 
 from google import genai
 from google.genai import types
 
-
-# ------------------------------------------------------------------
-# System prompt — base persona (always injected)
-# ------------------------------------------------------------------
-_BASE_SYSTEM_INSTRUCTION = (
-    "You are an expert Sommelier, Inventory Manager, and Wine Educator. You are multi-lingual. "
-    "CRITICAL RULE: You must detect the language of the user's message and reply EXCLUSIVELY in that same language. "
-    "If the user speaks English, your entire response MUST be in English. If the user speaks Hebrew, your entire response MUST be in Hebrew with a natural, friendly Israeli tone (בגובה העיניים, זורם, לא מליצי).\n\n"
-    "CONSTRAINTS & BEHAVIORS:\n"
-    "1. KASHRUT: Recommend only strictly Kosher, dry wines.\n"
-    "2. TASTE PROFILE: User prefers top-tier producers (Flam, Raziel, Feldstein, Castel, Tzora). "
-    "Loves Mediterranean varietals (Syrah, Carignan, GSM), Sangiovese, heavy oak. Dislikes thin/cheap Merlot.\n"
-    "3. CONTEXTUAL AWARENESS (CRITICAL): You receive the user's wine inventory with every message. "
-    "Do NOT analyze the inventory or recommend a bottle UNLESS the user explicitly asks for a pairing, "
-    "recommendation, or cellar review. If the user asks a general wine knowledge question, answer ONLY that question.\n"
-    "4. INVENTORY LOGIC: When asked for a recommendation, prioritize 'Open' bottles. "
-    "Strictly enforce the 'המלצת פתיחה' data. Discourage opening bottles marked to be held.\n"
-    "5. ROLES: Explain chemical synergy in food pairings. Act as purchasing advisor for cellar gaps. "
-    "Use professional terminology (tannins, malolactic, terroir) and explain the why.\n"
-    "6. CONCISENESS: Keep responses structured, focused, and under 400 words. Never cut off mid-sentence."
+from sommelier_prompts import (
+    BASE_SYSTEM_INSTRUCTION as _BASE_SYSTEM_INSTRUCTION,
+    EXTRACTION_PROMPT as _EXTRACTION_PROMPT,
+    MEMORY_SECTION_TEMPLATE as _MEMORY_SECTION_TEMPLATE,
+    PHOTO_PROMPT as _PHOTO_PROMPT,
+    REQUEST_PROMPT as _REQUEST_PROMPT,
+    SUMMARIZER_SYSTEM as _SUMMARIZER_SYSTEM,
+    TRANSCRIPTION_PROMPT as _TRANSCRIPTION_PROMPT,
 )
-
-# Appended to system prompt when long-term memory exists
-_MEMORY_SECTION_TEMPLATE = (
-    "\n\nMemory from previous conversations:\n"
-    "{summary}\n"
-    "Use this memory as background context. Do not explicitly repeat it unless asked."
-)
-
-# System instruction for the summarize() helper
-_SUMMARIZER_SYSTEM = (
-    "You are a concise summarizer. "
-    "When given a prompt and text, produce only the requested summary — "
-    "no preamble, no explanation, just the bullet points."
-)
-
-# ------------------------------------------------------------------
-# Voice transcription prompt
-# ------------------------------------------------------------------
-_TRANSCRIPTION_PROMPT = (
-    "Transcribe the following audio to text. Output ONLY the transcription - no "
-    "preamble, no translation, no quotation marks, no commentary. Transcribe in "
-    "the SAME language actually spoken, using that language's native script. The "
-    "speaker most often speaks Hebrew: if the speech is Hebrew, write it in Hebrew "
-    "letters, NOT a phonetic English approximation. If there is no intelligible "
-    "speech, return an empty string."
-)
-
-# ------------------------------------------------------------------
-# Photo analysis prompt — wine label vs. food (info or pairing)
-# ------------------------------------------------------------------
-_PHOTO_PROMPT = (
-    "You are the sommelier. The user sent a PHOTO. Reply in Hebrew, friendly "
-    "Israeli tone, concise (under ~250 words), no em dashes. You recommend only "
-    "kosher, dry wines.\n"
-    "First decide what the photo shows:\n"
-    "A) A WINE (a bottle/label): give a rundown - זיהוי (יקב/שם/בציר אם קריאים, "
-    "אל תמציא), סגנון וזן, פרופיל צפוי (נסח כ'צפוי', הבקבוק סגור), התאמה למאכל, "
-    "ומתי לשתות (מוכן/לשמור לפי הבציר).\n"
-    "B) FOOD / a DISH: recommend what to drink with it FROM THE USER'S CELLAR "
-    "below. Prefer bottles marked Open, respect the 'המלצת פתיחה' data, and name "
-    "specific bottles you see in the inventory. If the cellar is empty or not "
-    "provided, give a general kosher-dry suggestion and say so.\n"
-    "C) NEITHER: say briefly and politely that it is not a wine or a dish.\n"
-    "If the user added a caption/question, answer THAT specifically too."
-)
-
-# ------------------------------------------------------------------
-# /addwine extraction prompt
-# ------------------------------------------------------------------
-# The keys the model must return per wine. The first block is read off the label
-# (facts); the second block is the sommelier's reasoned judgment (editable
-# suggestions). The bot maps these to sheet columns; values the bot fills itself
-# (quantity, purchase_date) are NOT here.
-_WINE_KEYS = (
-    "winery", "wine_name", "type", "vintage", "grape_blend",
-    "region", "abv", "aging", "mevushal", "filtered",
-    "purpose", "tasting_notes", "opening_recommendation", "drinking_window",
-)
-
-_EXTRACTION_PROMPT = (
-    "You extract wine-cellar data AND give a sommelier's judgment, from wine labels\n"
-    "or a text description. Reply for each wine with one JSON object.\n"
-    "Return ONLY a JSON array. Each element is one wine, an object with EXACTLY these keys:\n"
-    "  winery, wine_name, type, vintage, grape_blend, region, abv, aging, mevushal,\n"
-    "  filtered, purpose, tasting_notes, opening_recommendation, drinking_window\n"
-    "\nFACTS - read from the label/description, never fabricate a fact:\n"
-    "- winery, wine_name: from the FRONT label (or the description). Keep the label's own\n"
-    "  language. If it is in Latin script, ALSO give a Hebrew transliteration formatted as\n"
-    '  "English (עברית)", e.g. "Villa Cape (וילה קייפ)".\n'
-    "- type: normalize to EXACTLY one of אדום (red) / לבן (white) / רוזה (rose) / מבעבע\n"
-    "  (sparkling). Infer from grape/color if not stated.\n"
-    '- vintage: TEXT, not a number. If no year, return "NV". "NV/2025" is also valid.\n'
-    "- grape_blend: ONLY if printed/stated. If absent, return null. Do NOT guess a blend.\n"
-    "- region: use the known Hebrew name if one exists, otherwise as printed.\n"
-    "- abv: alcohol percentage from the BACK label/text (e.g. \"13.5%\"), else null.\n"
-    "- aging: factual aging statement only (e.g. \"10 months in oak\"), else null.\n"
-    "- mevushal: \"yes\"/\"no\" if stated (kosher mevushal), else null.\n"
-    "- filtered: factual statement only (e.g. \"unfiltered\"), else null.\n"
-    "\nJUDGMENT - you ARE expected to reason here. Write these in Hebrew. They are\n"
-    "suggestions the user reviews and can edit, so be useful and specific:\n"
-    "- purpose (ייעוד): the best use/occasion for THIS wine given its style, body, grape,\n"
-    "  region and that it is kosher. One short Hebrew phrase, e.g. 'יין לאירוח ולמנות בשר',\n"
-    "  'יין יומיומי לשתייה', 'יין לשמירה ולהזדמנות מיוחדת'.\n"
-    "- tasting_notes (הערות): the EXPECTED flavor/aroma/structure profile, inferred from the\n"
-    "  grape, region, producer and style. Phrase it as an expectation (start with 'צפוי:'),\n"
-    "  NOT as if the bottle was tasted, and fold in the factual data (abv, oak, unfiltered).\n"
-    "- opening_recommendation (המלצת פתיחה): judge whether the wine is ready to drink now or\n"
-    "  better kept, from the vintage and the aging potential of the grape/region/producer.\n"
-    "  If it should be held, say until roughly which year (e.g. 'כדאי לשמור עד ~2028').\n"
-    "  If ready, say so ('מוכן לשתייה 🍷'). For white/rose/sparkling also give the serving\n"
-    "  temperature (e.g. 'להגשה מצוננת 7-9°C, מוכן לשתייה'). If vintage is NV, treat as ready.\n"
-    "- drinking_window (חלון שתייה): the estimated optimal drinking-year range, e.g.\n"
-    "  '2026-2032'. For an immediate-drinking wine give a near window from the current year.\n"
-    "  Use null only if you genuinely cannot estimate.\n"
-    "\nNever invent a FACT that is not on the label. Missing/unknown FACT values must be null.\n"
-    "Output the JSON array and nothing else."
-)
-
-
-# ------------------------------------------------------------------
-# Request parsing (orchestrator) — intent + which bottle + status + details
-# ------------------------------------------------------------------
-_INTENT_LABELS = ("add_wine", "edit_wine", "set_status", "delete_wine", "chat")
-_STATUS_VALUES = ("Open", "Closed", "Finished")
-_REQUEST_PROMPT = (
-    "You route a wine-cellar assistant. Read the user's Hebrew/English message "
-    "and the numbered cellar list, then output JSON ONLY:\n"
-    '{"intent":"<label>","wine_row":<int>,"status":"<Open|Closed|Finished|>",'
-    '"details":"<string>"}\n'
-    "intent labels:\n"
-    "- add_wine: wants to ADD a new bottle (e.g. 'תוסיף יין', 'add this wine').\n"
-    "- edit_wine: wants to CHANGE/correct fields of an existing bottle "
-    "(e.g. 'תעדכן את המחיר של הפלם', 'תקן את האזור').\n"
-    "- set_status: opened/finished a bottle or changing its status "
-    "(e.g. 'פתחתי את הפלם', 'סיימתי את הבקבוק', 'תסמן כפתוח').\n"
-    "- delete_wine: REMOVE a bottle entirely ('תמחק את היין', 'תוריד מהמרתף').\n"
-    "- chat: ANYTHING ELSE - questions, pairing/recommendations, 'מה יש לי "
-    "במרתף', education, small talk. When in doubt, choose chat.\n"
-    "wine_row: if the user refers to a specific bottle in the list, copy its "
-    "'row N' number here (MATCH ACROSS LANGUAGES - 'הפלם' matches a 'Flam' "
-    "entry). Use 0 if no specific bottle, or none matches, or it is not "
-    "applicable (chat / add_wine).\n"
-    "status: only for set_status - 'פתחתי'/'לפתוח'->Open, "
-    "'סיימתי'/'גמרתי'/'נגמר'->Finished, 'לא נפתח'/'סגור'->Closed. Else \"\".\n"
-    "details: for add_wine, the wine description to add (copy the relevant part "
-    "of the message); for edit_wine, the requested change in words. Else \"\".\n"
-    "Output the JSON object and nothing else."
+from sommelier_parsing import (
+    CHAT_REQUEST as _CHAT_REQUEST,
+    format_wines_for_match as _format_wines_for_match,
+    parse_request as _parse_request,
+    # re-exported under its historical name: tests/test_addwine.py imports
+    # `_parse_wine_json` from this module.
+    parse_wine_json as _parse_wine_json,
 )
 
 
@@ -416,7 +287,7 @@ class SommelierAI:
                 except Exception as exc:
                     last_error = exc
                     err_str = str(exc).lower()
-                    
+
                     if "429" in err_str or "quota exceeded" in err_str or "resource exhausted" in err_str or "404" in err_str or "not found" in err_str:
                         sys.stderr.write(f"WARNING: Model {model_name} failed (Quota/NotFound). Falling back to next model.\n")
                         break  # Break inner loop, next model
@@ -427,109 +298,3 @@ class SommelierAI:
                         continue
                     raise
         raise RuntimeError("All fallback models exhausted due to quota/rate limits.") from last_error
-
-
-# ----------------------------------------------------------------------
-# Defensive parsing for request parsing (orchestrator)
-# ----------------------------------------------------------------------
-
-_CHAT_REQUEST = {"intent": "chat", "wine_row": 0, "status": "", "details": ""}
-
-
-def _format_wines_for_match(wines: list[dict]) -> str:
-    """Compact numbered listing the model uses to resolve which bottle is meant."""
-    lines = []
-    for w in wines:
-        row = w.get("row")
-        if not row:
-            continue
-        values = w.get("values") or []
-        winery = values[0] if len(values) > 0 else ""
-        name = values[1] if len(values) > 1 else ""
-        vintage = values[3] if len(values) > 3 else ""
-        status = w.get("status") or ""
-        lines.append(f"row {row}: {winery} - {name} ({vintage}) [{status}]")
-    return "\n".join(lines)
-
-
-def _parse_request(raw: str) -> dict:
-    """Parse the orchestrator response, defaulting unknown fields safely.
-
-    Tolerant of fenced/prose-wrapped JSON. An unparseable response or an
-    unrecognized intent yields a plain ``chat`` request (safe fall-through).
-    """
-    if not raw or not raw.strip():
-        return _CHAT_REQUEST.copy()
-    text = raw.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return _CHAT_REQUEST.copy()
-    if not isinstance(data, dict):
-        return _CHAT_REQUEST.copy()
-
-    intent = str(data.get("intent", "")).strip()
-    if intent not in _INTENT_LABELS:
-        return _CHAT_REQUEST.copy()
-
-    try:
-        wine_row = int(data.get("wine_row") or 0)
-    except (TypeError, ValueError):
-        wine_row = 0
-    status = str(data.get("status", "")).strip()
-    if status not in _STATUS_VALUES:
-        status = ""
-    details = str(data.get("details", "")).strip()
-    return {"intent": intent, "wine_row": wine_row,
-            "status": status, "details": details}
-
-
-# ----------------------------------------------------------------------
-# Defensive JSON parsing for /addwine extraction
-# ----------------------------------------------------------------------
-
-def _parse_wine_json(raw: str) -> list[dict]:
-    """Parse the model's response into a list of normalized wine dicts.
-
-    Tolerant by design: a fallback model may wrap JSON in ```json fences or emit
-    a single object instead of an array. A response we cannot parse yields [] so
-    the caller can ask the user to retry rather than crashing the append.
-    """
-    if not raw or not raw.strip():
-        return []
-
-    text = raw.strip()
-    # Strip ```json ... ``` (or plain ```) fences a non-JSON-mode model may add.
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        # reason: a fallback model (gemma) may wrap the JSON in prose like
-        # "Here is the JSON: [...]". Salvage the first array/object substring
-        # rather than discarding an otherwise-valid extraction.
-        match = re.search(r"(\[.*\]|\{.*\})", text, flags=re.DOTALL)
-        if not match:
-            return []
-        try:
-            data = json.loads(match.group(1))
-        except (json.JSONDecodeError, ValueError):
-            return []
-
-    if isinstance(data, dict):
-        data = [data]  # single wine returned bare -> wrap
-    if not isinstance(data, list):
-        return []
-
-    wines: list[dict] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        # Keep only known keys; fill any missing key with None.
-        wines.append({key: item.get(key) for key in _WINE_KEYS})
-    return wines
