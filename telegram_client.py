@@ -11,10 +11,65 @@ import urllib.error
 import urllib.request
 
 
+# Telegram caps a message at 4096 visible characters; keep a safety margin.
+_MAX_CHUNK = 4000
+
+
+def _split_text(text: str, limit: int = _MAX_CHUNK) -> list[str]:
+    """Split *text* into chunks of at most *limit* chars, on natural boundaries.
+
+    Prefers a line break, then a space, and only hard-cuts a run with neither,
+    so a long answer isn't split mid-word or mid-**bold** span.
+    """
+    chunks: list[str] = []
+    rest = text
+    while len(rest) > limit:
+        cut = rest.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = rest.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(rest[:cut])
+        rest = rest[cut:].lstrip("\n ")
+    if rest:
+        chunks.append(rest)
+    return chunks
+
+
+def _markdown_to_html(text: str) -> str:
+    """Escape *text* for Telegram's HTML parse mode and map Gemini's Markdown.
+
+    Handles **bold**, *italic*, '# headers', and '* ' bullet lines. Bullets are
+    rewritten to '•' FIRST: otherwise the italic pass pairs the asterisks of
+    two consecutive bullet lines and italicizes everything between them.
+    Bold/italic never span a line break, so a stray asterisk can't swallow
+    the rest of the message.
+    """
+    safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # '* item' bullet lines -> '• item'
+    safe = re.sub(r"^([ \t]*)\*[ \t]+", r"\1• ", safe, flags=re.MULTILINE)
+    # ***bold italic*** -> properly nested tags (the passes below would cross them)
+    safe = re.sub(r"\*\*\*([^\n]+?)\*\*\*", r"<b><i>\1</i></b>", safe)
+    # **bold** -> <b>bold</b>
+    safe = re.sub(r"\*\*([^\n]+?)\*\*", r"<b>\1</b>", safe)
+    # *italic* -> <i>italic</i> (no spaces just inside the markers, no word chars
+    # just outside them, so '2*3*4' or a lone '*' stay literal)
+    safe = re.sub(
+        r"(?<![*\w])\*(?![\s*])([^*\n]+?)(?<!\s)\*(?![*\w])", r"<i>\1</i>", safe
+    )
+    # '# Header' lines -> bold lines
+    safe = re.sub(r"^#+\s+(.*)", r"<b>\1</b>", safe, flags=re.MULTILINE)
+    return safe
+
+
 class TelegramClient:
     """Sends messages via the Telegram Bot API."""
 
     BASE_URL = "https://api.telegram.org"
+    # Every call is bounded: a hung socket must not eat the function's whole
+    # Vercel time budget and leave the user with no reply at all.
+    TIMEOUT_SEC = 10
+    DOWNLOAD_TIMEOUT_SEC = 30  # photos / voice notes can be a few MB.
 
     def __init__(self):
         self.token: str = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -34,19 +89,11 @@ class TelegramClient:
         LAST chunk only, so confirmation buttons appear after the full text.
         Returns the parsed JSON response from the last chunk sent.
         """
-        # Escape unhandled <, >, & to satisfy Telegram HTML parser constraints
-        safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        # Convert Gemini's **bold** Markdown to <b>...</b>
-        safe_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_text, flags=re.DOTALL)
-        # Convert Gemini's *italic* to <i>...</i>
-        safe_text = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', safe_text, flags=re.DOTALL)
-        # Convert Markdown `# Headers` to bold HTML lines
-        safe_text = re.sub(r'^#+\s+(.*)', r'<b>\1</b>', safe_text, flags=re.MULTILINE)
-
-        # Split into ≤4000-char chunks (safe margin below 4096)
-        chunk_size = 4000
-        chunks = [safe_text[i:i + chunk_size] for i in range(0, len(safe_text), chunk_size)]
+        # Split the RAW text (Telegram's limit counts visible characters, not
+        # HTML markup), then format each chunk. Keeping the raw chunk around
+        # lets the no-parse-mode fallback send readable text instead of the
+        # escaped HTML ('&amp;', '<b>') it would otherwise show literally.
+        chunks = _split_text(text)
 
         def _send(data: dict):
             req = urllib.request.Request(
@@ -55,14 +102,14 @@ class TelegramClient:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
                 return json.loads(response.read().decode("utf-8"))
 
         last_result = None
         for index, chunk in enumerate(chunks):
             payload_dict = {
                 "chat_id": chat_id,
-                "text": chunk,
+                "text": _markdown_to_html(chunk),
                 "parse_mode": "HTML",
             }
             # reason: keyboard belongs on the final chunk so it renders below the
@@ -74,8 +121,9 @@ class TelegramClient:
             except urllib.error.HTTPError as e:
                 error_body = e.read().decode("utf-8")
                 if "can't parse entities" in error_body.lower() or "bad request" in error_body.lower():
-                    # Fallback: send without parse_mode
+                    # Fallback: send the raw chunk as plain text.
                     payload_dict.pop("parse_mode", None)
+                    payload_dict["text"] = chunk
                     try:
                         last_result = _send(payload_dict)
                     except urllib.error.HTTPError as inner_e:
@@ -98,7 +146,7 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
             result = json.loads(response.read().decode("utf-8"))
         return result["result"]["file_path"]
 
@@ -109,7 +157,7 @@ class TelegramClient:
         API host used for method calls.
         """
         url = f"{self.BASE_URL}/file/bot{self.token}/{file_path}"
-        with urllib.request.urlopen(url) as response:
+        with urllib.request.urlopen(url, timeout=self.DOWNLOAD_TIMEOUT_SEC) as response:
             return response.read()
 
     def download_photo(self, file_id: str) -> bytes:
@@ -141,7 +189,7 @@ class TelegramClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception:
             return {}
@@ -156,7 +204,7 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
             return json.loads(response.read().decode("utf-8"))
 
     # ------------------------------------------------------------------
@@ -174,7 +222,7 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def edit_message_reply_markup(
@@ -198,7 +246,7 @@ class TelegramClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception:
             # Best-effort: a failed keyboard cleanup must not block the append.

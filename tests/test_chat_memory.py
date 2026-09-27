@@ -27,6 +27,27 @@ class TestChatMemory(unittest.TestCase):
         self.assertEqual(summary, "")
 
     @patch("urllib.request.urlopen")
+    def test_get_context_tolerates_non_numeric_updated_at(self, mock_urlopen):
+        # A blank / text timestamp cell must not crash every chat answer.
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "active_history": [], "long_term_summary": "prefers Syrah",
+            "updated_at": "",
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        history, summary = self.memory.get_context("123")
+        self.assertEqual(history, [])
+        self.assertEqual(summary, "prefers Syrah")
+
+    @patch("urllib.request.urlopen")
+    def test_get_context_non_dict_document(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(["unexpected"]).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        self.assertEqual(self.memory.get_context("123"), ([], ""))
+
+    @patch("urllib.request.urlopen")
     def test_save_turn(self, mock_urlopen):
         mock_resp_get = MagicMock()
         mock_resp_get.read.return_value = json.dumps({

@@ -161,7 +161,8 @@ def resolve_selection(
     *shown* is the currently displayed index list (``None``/empty -> all).
     """
     current = shown if shown else list(range(len(entries)))
-    if text.isdigit():
+    # isdecimal, not isdigit: '²' is a "digit" that int() rejects (ValueError).
+    if text.isdecimal():
         n = int(text)
         if not (1 <= n <= len(current)):
             return ("invalid", None)

@@ -51,13 +51,25 @@ def _handle_callback_query(callback: dict, allowed_user_id: str) -> tuple[str, s
     cb_chat_id = callback.get("message", {}).get("chat", {}).get("id")
     if allowed_user_id and str(cb_chat_id) != allowed_user_id:
         return ("200 OK", "OK — unauthorized user")
+    claimed = False
     try:
         # Try each in turn until one consumes the tap (orchestrator last).
         for flow_cls in _CALLBACK_FLOWS:
             if flow_cls().handle_callback(callback):
+                claimed = True
                 break
-    except Exception:
-        pass
+    except Exception as exc:
+        claimed = True  # a flow owned it and failed; don't call it stale.
+        sys.stderr.write(f"ERROR: callback handling failed: {exc}\n")
+    if not claimed:
+        # A button no flow recognizes (e.g. an old message from a retired flow)
+        # still needs an answer, or Telegram spins its loading indicator forever.
+        try:
+            TelegramClient().answer_callback_query(
+                callback.get("id", ""), "הכפתור הזה כבר לא פעיל."
+            )
+        except Exception:
+            pass
     return _OK
 
 
@@ -146,7 +158,7 @@ def _handle_bare_photo(message: dict, chat_id) -> tuple[str, str] | None:
 
 
 def _handle_command(text: str, chat_id) -> tuple[str, str] | None:
-    """Handle the bot commands this layer owns (/reset, /start).
+    """Handle the bot commands this layer owns (/reset, /start, stray /cancel).
 
     Returns a terminal response for those; returns None for anything else
     (including other '/' commands, which the flows above already consumed).
@@ -155,6 +167,22 @@ def _handle_command(text: str, chat_id) -> tuple[str, str] | None:
     if not stripped.startswith("/"):
         return None
     command = stripped.split()[0].lower()
+    if command == "/cancel":
+        # Every active flow consumes its own /cancel above, so reaching here
+        # means no flow is running (e.g. it already expired). Drop a pending
+        # orchestrator confirm if there is one, and say which it was, instead
+        # of handing "/cancel" to the model as a question.
+        try:
+            cancelled = Orchestrator.cancel_pending(str(chat_id))
+        except Exception:
+            cancelled = False
+        reply = ("בוטל. שום דבר לא שונה." if cancelled
+                 else "אין כרגע פעולה פעילה לביטול.")
+        try:
+            TelegramClient().send_message(chat_id=chat_id, text=reply)
+        except Exception:
+            pass
+        return _OK
     if command not in ("/reset", "/start"):
         return None
 

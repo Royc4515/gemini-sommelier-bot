@@ -1,7 +1,7 @@
 """
 sommelier_ai.py — Logic Layer
 
-Wraps the Google GenAI client (primary model gemini-3.1-flash-lite, with a
+Wraps the Google GenAI client (primary model gemini-3.5-flash-lite, with a
 fallback chain — see FALLBACK_MODELS) with domain-specific system instructions
 for the Wine Sommelier persona.
 
@@ -14,6 +14,8 @@ in ``sommelier_prompts``; the defensive output parsers live in
 import os
 import sys
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from google import genai
 from google.genai import types
@@ -36,6 +38,8 @@ from sommelier_parsing import (
     parse_wine_json as _parse_wine_json,
 )
 
+_TZ = ZoneInfo("Asia/Jerusalem")  # the owner's "today" (same as addwine).
+
 
 class SommelierAI:
     """Façade over the Gemini generative model.
@@ -44,18 +48,48 @@ class SommelierAI:
     (summarize) used by the memory layer.
     """
 
+    # Ordered cheapest/fastest first. Each entry is an exact Gemini API model
+    # code (a wrong code 404s and silently burns a hop), spread over separate
+    # quota buckets so one exhausted model doesn't take the whole chain down:
+    #   * gemini-3.5-flash-lite - current Flash-Lite, the primary.
+    #   * gemini-3.1-flash-lite - previous primary, proven live.
+    #   * gemma-4-31b-it        - open model, its own quota; text-only here.
+    #   * gemini-3.8-flash      - current Flash, strongest, slowest; last resort.
     FALLBACK_MODELS = (
+        "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
-        "gemma-4-31b",
-        "gemini-3-flash",
-        "gemini-2.5-flash"
+        "gemma-4-31b-it",
+        "gemini-3.8-flash",
     )
     _MAX_RETRIES = 3
-    _RETRY_STATUSES = ("503", "unavailable", "overloaded")
+    # Server-side hiccups worth retrying on the SAME model before moving on
+    # (the API's documented retryable codes: 500, 503, 504), plus network
+    # timeouts, which carry no HTTP code.
+    _RETRY_CODES = (500, 503, 504)
+    _RETRY_STATUSES = (
+        "500", "503", "504", "internal", "unavailable", "overloaded",
+        "deadline", "timed out", "timeout",
+    )
+    # Message text that marks an error no retry on this model will fix (quota,
+    # retired model), even if it also says e.g. "temporarily unavailable".
+    _SKIP_STATUSES = (
+        "429", "quota exceeded", "resource exhausted", "resource_exhausted",
+        "404", "not found", "not_found",
+    )
 
     def __init__(self):
         api_key: str = os.environ["GEMINI_API_KEY"]
         self.client = genai.Client(api_key=api_key)
+
+    @staticmethod
+    def _today_line() -> str:
+        """Today's date in the owner's timezone, for prompts that reason about time.
+
+        The model only knows its training cutoff, so "ready now or hold until
+        ~2028" and "a drinking window from the current year" need the real date.
+        """
+        today = datetime.now(_TZ).strftime("%Y-%m-%d")
+        return f"Today's date: {today}."
 
     # ------------------------------------------------------------------
     # Public: conversation
@@ -69,7 +103,7 @@ class SommelierAI:
         long_term_summary: str = "",
     ) -> str:
         """Send a user turn and return the model's text response."""
-        system_instruction = _BASE_SYSTEM_INSTRUCTION
+        system_instruction = f"{_BASE_SYSTEM_INSTRUCTION}\n\n{self._today_line()}"
         if long_term_summary and long_term_summary.strip():
             system_instruction += _MEMORY_SECTION_TEMPLATE.format(
                 summary=long_term_summary.strip()
@@ -77,6 +111,12 @@ class SommelierAI:
 
         gemini_history = []
         for msg in (history or []):
+            # Stored history comes back from the sheet; one malformed entry must
+            # not break every future answer until /reset, so skip it.
+            if not isinstance(msg, dict) or msg.get("role") not in ("user", "model"):
+                continue
+            if not msg.get("text"):
+                continue
             gemini_history.append(
                 types.Content(
                     role=msg["role"],
@@ -144,6 +184,7 @@ class SommelierAI:
         # (name/winery) and back (region/abv/aging) instead of guessing per image.
         contents = [
             _EXTRACTION_PROMPT,
+            self._today_line(),
             types.Part.from_bytes(data=front_bytes, mime_type=front_mime),
             types.Part.from_bytes(data=back_bytes, mime_type=back_mime),
         ]
@@ -151,7 +192,11 @@ class SommelierAI:
 
     def extract_wines_from_text(self, description: str) -> list[dict]:
         """Extract one or more wines from a free-text description."""
-        contents = [_EXTRACTION_PROMPT, f"Wine description(s):\n{description}"]
+        contents = [
+            _EXTRACTION_PROMPT,
+            self._today_line(),
+            f"Wine description(s):\n{description}",
+        ]
         return self._extract(contents)
 
     # ------------------------------------------------------------------
@@ -161,8 +206,8 @@ class SommelierAI:
     def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
         """Transcribe a voice note to text in its original language.
 
-        Restricted to audio-capable models: the gemma fallbacks cannot take
-        audio, so feeding them a voice note would raise and abort. We pass only
+        Restricted to audio-capable models: the gemma fallback (31B) cannot take
+        audio, so feeding it a voice note would only waste a hop. We pass only
         the gemini models from the chain (constitution §5: degrade, never crash).
         """
         audio_models = [m for m in self.FALLBACK_MODELS if not m.startswith("gemma")]
@@ -199,12 +244,14 @@ class SommelierAI:
 
         Decides wine-label vs. food vs. neither: a label gets a rundown, a dish
         gets a pairing drawn from *inventory_context* (Open-first). Restricted to
-        image-capable models (gemma cannot take images). Read only - never writes
-        to the cellar.
+        the gemini models, the ones live-verified on this Hebrew photo prompt
+        (gemma 4 can read images, but is kept text-only here). Read only - never
+        writes to the cellar.
         """
         image_models = [m for m in self.FALLBACK_MODELS if not m.startswith("gemma")]
         contents = [
             _PHOTO_PROMPT,
+            self._today_line(),
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
         ]
         if inventory_context and inventory_context.strip():
@@ -274,7 +321,13 @@ class SommelierAI:
         return response.text or ""
 
     def _call_with_retry(self, fn, models=None) -> str:
-        """Execute *fn(model_name)* with exponential backoff on transient errors.
+        """Execute *fn(model_name)* down the fallback chain.
+
+        Per model: a transient server error (500/503/504, "overloaded") is
+        retried with exponential backoff; once those retries are spent, or on
+        any other error (quota, retired model, a model-specific rejection), we
+        move on to the NEXT model instead of failing the whole request. Only
+        when every model has failed does this raise (constitution §5).
 
         *models* lets a caller restrict the fallback chain (e.g. transcription
         passes only audio-capable models); defaults to the full chain.
@@ -286,15 +339,31 @@ class SommelierAI:
                     return fn(model_name)
                 except Exception as exc:
                     last_error = exc
-                    err_str = str(exc).lower()
-
-                    if "429" in err_str or "quota exceeded" in err_str or "resource exhausted" in err_str or "404" in err_str or "not found" in err_str:
-                        sys.stderr.write(f"WARNING: Model {model_name} failed (Quota/NotFound). Falling back to next model.\n")
-                        break  # Break inner loop, next model
-
-                    is_transient = any(s in err_str for s in self._RETRY_STATUSES)
-                    if is_transient and attempt < self._MAX_RETRIES - 1:
+                    if self._is_transient(exc) and attempt < self._MAX_RETRIES - 1:
                         time.sleep(2 ** attempt)
                         continue
-                    raise
-        raise RuntimeError("All fallback models exhausted due to quota/rate limits.") from last_error
+                    sys.stderr.write(
+                        f"WARNING: Model {model_name} failed ({str(exc)[:200]}). "
+                        "Falling back to next model.\n"
+                    )
+                    break  # next model
+        raise RuntimeError(
+            f"All fallback models exhausted. Last error: {last_error}"
+        ) from last_error
+
+    @classmethod
+    def _is_transient(cls, exc: Exception) -> bool:
+        """True when retrying the SAME model may succeed.
+
+        The SDK's APIError carries the HTTP status as ``.code``; trust that
+        first, so a 400 whose message merely mentions "500" isn't retried.
+        Anything without a code (network timeouts, test doubles) falls back to
+        matching the message text; quota / not-found text always wins.
+        """
+        code = getattr(exc, "code", None)
+        if isinstance(code, int):
+            return code in cls._RETRY_CODES
+        err = str(exc).lower()
+        if any(s in err for s in cls._SKIP_STATUSES):
+            return False
+        return any(s in err for s in cls._RETRY_STATUSES)

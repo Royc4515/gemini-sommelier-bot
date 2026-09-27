@@ -47,7 +47,7 @@ def apply_fill(records: list[dict], text: str, labels: tuple) -> None:
         if not key or value == "":
             continue
         if key == "quantity":
-            if not value.isdigit():
+            if not value.isdecimal():  # isdigit() admits '²', which int() rejects
                 continue
             value = int(value)
 

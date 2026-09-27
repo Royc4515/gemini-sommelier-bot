@@ -134,6 +134,15 @@ class HelperTests(unittest.TestCase):
         rec = _record_from_values(values)
         self.assertEqual(rec["purchase_date"], "17/04/2026")
 
+    def test_record_from_values_israel_midnight_date_not_shifted(self):
+        # A sheet in Asia/Jerusalem serializes 17/04 local midnight as 21:00Z
+        # on the 16th; the UTC date would drift the purchase date a day early
+        # on every save.
+        for iso, want in (("2026-04-16T21:00:00.000Z", "17/04/2026"),   # IDT +3
+                          ("2026-01-31T22:00:00.000Z", "01/02/2026")):  # IST +2
+            values = ["W", "N", "", "", "", "", 1, "", "", iso, "", "", "", ""]
+            self.assertEqual(_record_from_values(values)["purchase_date"], want)
+
     def test_record_from_values_leaves_plain_date(self):
         values = ["W", "N", "", "", "", "", 1, "", "", "17/04/2026", "", "", "", ""]
         rec = _record_from_values(values)

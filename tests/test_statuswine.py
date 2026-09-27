@@ -85,6 +85,13 @@ class RenderTests(unittest.TestCase):
         kb = _list_keyboard(entries, [0])
         self.assertEqual(kb["inline_keyboard"][0][0]["callback_data"], "status:pick:2")
 
+    def test_superscript_digit_is_a_filter_not_a_crash(self):
+        from cellar_picker import resolve_selection
+        entries = [{"row": 2, "status": "Closed", "winery": "Flam",
+                    "wine_name": "Classico", "vintage": "2021"}]
+        self.assertEqual(resolve_selection(entries, [0], "²"), ("empty", None))
+        self.assertEqual(resolve_selection(entries, [0], "1")[0], "pick")
+
     def test_no_buttons_when_too_many(self):
         entries = [{"row": r, "status": "Closed", "winery": f"W{r}",
                     "wine_name": f"N{r}", "vintage": "2020"} for r in range(2, 25)]
