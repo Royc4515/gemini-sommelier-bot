@@ -1,6 +1,6 @@
 # 🍷 Gemini Sommelier Bot
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![Gemini API](https://img.shields.io/badge/Gemini_API-Enabled-orange?logo=google)](https://ai.google.dev/)
 [![Telegram Bot](https://img.shields.io/badge/Telegram_Bot-Active-blue?logo=telegram)](https://core.telegram.org/bots)
 [![Vercel](https://img.shields.io/badge/Vercel-Serverless-black?logo=vercel)](https://vercel.com)
@@ -33,9 +33,10 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 - **Smart photo (wine or food)**: Send a photo on its own (no command). A wine label gets a sommelier rundown; a photo of a dish gets a pairing recommendation drawn from your actual cellar (Open bottles first). Add a caption to ask a specific question. Read only, no cellar write.
 - **Open / Finish a bottle (`/status`)**: Pick a bottle (button, number, or name filter) and mark it Open, Finished, or Closed. Writes only the status column (A-N and O/P/Q untouched), with the same shifted-row identity guard as `/editwine`.
 
-- **Remove a bottle (`/delete`)**: Pick a bottle (button, number, or name filter), see its identity, and confirm a permanent removal on a second step. Deletes that exact row with the same shifted-row identity guard; the confirm is single-use so a stray tap can't delete.- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
-- **Resilient AI Pipeline**: Integrates the `google-genai` SDK with an automatic fallback chain (`gemini-3.1-flash-lite` → `gemma-4-31b` → `gemini-2.5-flash`) and exponential backoff to mitigate transient API errors.
-- **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via the system instructions within `sommelier_ai.py`.
+- **Remove a bottle (`/delete`)**: Pick a bottle (button, number, or name filter), see its identity, and confirm a permanent removal on a second step. Deletes that exact row with the same shifted-row identity guard; the confirm is single-use so a stray tap can't delete.
+- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
+- **Resilient AI Pipeline**: Integrates the `google-genai` SDK (2.x) with an automatic fallback chain (`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemma-4-31b-it` → `gemini-3.8-flash`). Transient server errors (500/503/504) are retried with exponential backoff; any model that still fails (quota, retired, overloaded) hands off to the next one. Voice and photos skip the text-only Gemma hop.
+- **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via `BASE_SYSTEM_INSTRUCTION` in `sommelier_prompts.py`.
 
 ---
 
@@ -81,7 +82,7 @@ The system employs a stateless, event-driven architecture designed for high avai
 1. **Webhook Trigger**: A user sends a message via Telegram. Telegram fires an HTTP POST request to the Vercel Serverless Function endpoint (`api/index.py`).
 2. **State Retrieval**: The function synchronously fetches the latest cellar state directly from the configured Google Sheet via `urllib` and `csv` to minimize deployment payload size.
 3. **Context Assembly**: The user's query and the parsed inventory state are compiled into a unified context window.
-4. **Model Inference**: The request is routed to the Google Gemini API. If the primary model encounters a quota constraint or transient failure (e.g., `429 Too Many Requests`), the system automatically retries and gracefully degrades through the predefined fallback chain.
+4. **Model Inference**: The request is routed to the Google Gemini API. If the primary model hits a quota limit (`429`), is retired (`404`), or stays overloaded (`503`) after retries, the system gracefully degrades through the predefined fallback chain.
 5. **Response Dispatch**: The generated pairing recommendation is securely returned to the user via the Telegram Bot API.
 
 ---
@@ -90,15 +91,15 @@ The system employs a stateless, event-driven architecture designed for high avai
 
 ### 1. Prerequisites
 - A Telegram Bot Token (from [@BotFather](https://t.me/botfather))
-- A Google Cloud Service Account JSON file (with Google Sheets API enabled)
+- A Google Apps Script Web App bound to your memory sheet (paste `apps_script.js`; it handles every sheet write, no service account needed)
 - A Google Gemini API Key
 - A Google Sheet formatted for your inventory
 
 ### 2. Clone & Install
 ```bash
-git clone https://github.com/Royc4515/gemini-wine-sommelier.git
-cd gemini-wine-sommelier
-pip install -r requirements.txt
+git clone https://github.com/Royc4515/gemini-sommelier-bot.git
+cd gemini-sommelier-bot
+pip install -r requirements.txt   # Python 3.12 (see .python-version; Vercel and CI use it too)
 ```
 
 ### 3. Environment Variables
@@ -123,12 +124,13 @@ CELLAR_FILE_ID=your_cellar_spreadsheet_id     # defaults to the bundled sheet id
 ### 4. Running Tests
 The project uses Python's built-in `unittest` framework with full API mocking to ensure reliability across all API boundaries.
 ```bash
-python -m unittest discover tests/
+python -m unittest discover -s tests
+python selftest_overhaul.py        # architecture smoke check (also run in CI)
 ```
 
 ### 5. Customizing Your Sommelier (Persona & Language)
 You can make the bot speak any language or follow specific dietary/wine restrictions (e.g., French only, Natural wines, Kosher wines, etc.). 
-Simply edit the `SYSTEM_INSTRUCTION` variable inside `sommelier_ai.py` to shape your perfect Sommelier!
+Simply edit `BASE_SYSTEM_INSTRUCTION` inside `sommelier_prompts.py` to shape your perfect Sommelier!
 
 ---
 
