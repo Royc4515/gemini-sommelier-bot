@@ -69,6 +69,25 @@ class TestMarkdownToHtmlConversion(unittest.TestCase):
         payload = self._send_and_capture_payload("price < 100")
         self.assertIn("&lt;", payload["text"])
 
+    def test_bullet_lines_not_turned_into_italics(self):
+        # Gemini's '* item' bullets: the old italic pass paired the asterisks of
+        # consecutive bullets and italicized the text between them.
+        payload = self._send_and_capture_payload("* Syrah\n* Carignan\n* GSM")
+        self.assertEqual(payload["text"], "• Syrah\n• Carignan\n• GSM")
+        self.assertNotIn("<i>", payload["text"])
+
+    def test_bold_italic_tags_properly_nested(self):
+        payload = self._send_and_capture_payload("***Flam***")
+        self.assertEqual(payload["text"], "<b><i>Flam</i></b>")
+
+    def test_lone_asterisks_stay_literal(self):
+        payload = self._send_and_capture_payload("2*3*4 and a lone * star")
+        self.assertEqual(payload["text"], "2*3*4 and a lone * star")
+
+    def test_emphasis_never_spans_lines(self):
+        payload = self._send_and_capture_payload("**open\nclose**")
+        self.assertNotIn("<b>", payload["text"])
+
     def test_parse_mode_is_html(self):
         payload = self._send_and_capture_payload("hello")
         self.assertEqual(payload.get("parse_mode"), "HTML")
@@ -120,6 +139,37 @@ class TestMessageChunking(unittest.TestCase):
             self.assertLessEqual(len(chunk), 4000)
 
 
+    def test_split_prefers_line_boundaries(self):
+        text = "intro\n" + "a" * 3990 + "\n" + "**bold tail**"
+        sent_chunks = []
+
+        def fake_urlopen(req, **kwargs):
+            sent_chunks.append(json.loads(req.data.decode("utf-8"))["text"])
+            return _make_http_response({"ok": True})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.send_message(chat_id=1, text=text)
+
+        self.assertEqual(len(sent_chunks), 2)
+        self.assertEqual(sent_chunks[0], "intro\n" + "a" * 3990)
+        self.assertEqual(sent_chunks[1], "<b>bold tail</b>")
+
+    def test_keyboard_only_on_last_chunk(self):
+        sent = []
+
+        def fake_urlopen(req, **kwargs):
+            sent.append(json.loads(req.data.decode("utf-8")))
+            return _make_http_response({"ok": True})
+
+        kb = {"inline_keyboard": [[{"text": "ok", "callback_data": "x"}]]}
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.send_message(chat_id=1, text="ג" * 8100, reply_markup=kb)
+
+        self.assertEqual(len(sent), 3)
+        self.assertNotIn("reply_markup", sent[0])
+        self.assertEqual(sent[-1]["reply_markup"], kb)
+
+
 class TestFallbackOnBadRequest(unittest.TestCase):
     """TelegramClient — strips parse_mode and retries on Telegram 400 errors."""
 
@@ -148,6 +198,25 @@ class TestFallbackOnBadRequest(unittest.TestCase):
 
         self.assertEqual(len(call_payloads), 2)
         self.assertNotIn("parse_mode", call_payloads[1])
+
+    def test_fallback_sends_readable_plain_text_not_escaped_html(self):
+        import urllib.error
+
+        call_payloads = []
+
+        def fake_urlopen(req, **kwargs):
+            call_payloads.append(json.loads(req.data.decode("utf-8")))
+            if len(call_payloads) == 1:
+                raise urllib.error.HTTPError(
+                    url="", code=400, msg="Bad Request", hdrs=None,
+                    fp=io.BytesIO(b'{"description": "Bad Request: can\'t parse entities"}'),
+                )
+            return _make_http_response({"ok": True})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.send_message(chat_id=1, text="**Syrah & Merlot** < 100")
+
+        self.assertEqual(call_payloads[1]["text"], "**Syrah & Merlot** < 100")
 
 
 class TestVoiceAndMenu(unittest.TestCase):
@@ -187,6 +256,25 @@ class TestVoiceAndMenu(unittest.TestCase):
 
         self.assertTrue(captured["url"].endswith("/setMyCommands"))
         self.assertEqual(captured["body"]["commands"][0]["command"], "addwine")
+
+    def test_every_api_call_has_a_timeout(self):
+        timeouts = []
+
+        def fake_urlopen(req, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return _make_http_response({"ok": True, "result": {"file_path": "p"}})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.client.send_message(1, "hi")
+            self.client.send_chat_action(1)
+            self.client.set_my_commands([])
+            self.client.answer_callback_query("cq")
+            self.client.edit_message_reply_markup(1, 2, {"inline_keyboard": []})
+            self.client.get_file_path("fid")
+            self.client.download_file("p")
+
+        self.assertEqual(len(timeouts), 7)
+        self.assertTrue(all(isinstance(t, (int, float)) and t > 0 for t in timeouts))
 
     def test_download_voice_resolves_then_downloads(self):
         with patch.object(self.client, "get_file_path", return_value="voice/f_1.oga") as gfp, \

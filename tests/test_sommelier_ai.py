@@ -121,36 +121,152 @@ class TestSommelierAI(unittest.TestCase):
             self.assertEqual(call[1]["model"], SommelierAI.FALLBACK_MODELS[0])
 
     @patch("time.sleep")
-    def test_exhaust_retries_on_503(self, mock_sleep):
-        # Fail all 3 times with 503
-        self.mock_client.chats.create.side_effect = Exception("503 Service Unavailable")
+    def test_exhausted_503_retries_fall_back_to_next_model(self, mock_sleep):
+        # An overloaded primary (the most common Gemini failure) must not abort
+        # the request: after its retries it hands off to the next model.
+        mock_response = MagicMock()
+        mock_response.text = "from the second model"
+        self.mock_client.chats.create.side_effect = [
+            Exception("503 UNAVAILABLE. The model is overloaded."),
+            Exception("503 UNAVAILABLE. The model is overloaded."),
+            Exception("503 UNAVAILABLE. The model is overloaded."),
+            self.mock_chat,
+        ]
+        self.mock_chat.send_message.return_value = mock_response
 
-        with self.assertRaisesRegex(Exception, "503 Service Unavailable"):
-            self.ai.ask("test", "test")
-            
-        self.assertEqual(self.mock_client.chats.create.call_count, 3)
+        with patch("sys.stderr.write"):
+            result = self.ai.ask("test", "test")
+
+        self.assertEqual(result, "from the second model")
+        models = [c[1]["model"] for c in self.mock_client.chats.create.call_args_list]
+        self.assertEqual(models, [SommelierAI.FALLBACK_MODELS[0]] * 3
+                         + [SommelierAI.FALLBACK_MODELS[1]])
         self.assertEqual(mock_sleep.call_count, 2)
 
     @patch("time.sleep")
-    def test_fail_immediately_on_400(self, mock_sleep):
-        # Fail with non-retriable error
-        self.mock_client.chats.create.side_effect = Exception("400 Bad Request")
+    def test_retry_on_500_internal(self, mock_sleep):
+        mock_response = MagicMock()
+        mock_response.text = "ok"
+        self.mock_client.chats.create.side_effect = [
+            Exception("500 INTERNAL. An internal error has occurred."),
+            self.mock_chat,
+        ]
+        self.mock_chat.send_message.return_value = mock_response
 
-        with self.assertRaisesRegex(Exception, "400 Bad Request"):
-            self.ai.ask("test", "test")
-            
-        self.assertEqual(self.mock_client.chats.create.call_count, 1)
+        self.assertEqual(self.ai.ask("test", "test"), "ok")
+        models = [c[1]["model"] for c in self.mock_client.chats.create.call_args_list]
+        self.assertEqual(models, [SommelierAI.FALLBACK_MODELS[0]] * 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    @patch("time.sleep")
+    def test_400_skips_to_next_model_without_retry(self, mock_sleep):
+        # A model-specific rejection isn't retried on that model (it would only
+        # fail again) but must not abort the chain either.
+        mock_response = MagicMock()
+        mock_response.text = "ok"
+        self.mock_client.chats.create.side_effect = [
+            Exception("400 INVALID_ARGUMENT"),
+            self.mock_chat,
+        ]
+        self.mock_chat.send_message.return_value = mock_response
+
+        with patch("sys.stderr.write"):
+            self.assertEqual(self.ai.ask("test", "test"), "ok")
+        models = [c[1]["model"] for c in self.mock_client.chats.create.call_args_list]
+        self.assertEqual(models, list(SommelierAI.FALLBACK_MODELS[:2]))
+        mock_sleep.assert_not_called()
+
+    @patch("time.sleep")
+    def test_sdk_status_code_beats_message_text(self, mock_sleep):
+        # The SDK's APIError exposes .code; a 400 whose text mentions "500"
+        # must not be retried, and a coded 503 must be.
+        class FakeAPIError(Exception):
+            def __init__(self, code, msg):
+                super().__init__(msg)
+                self.code = code
+
+        mock_response = MagicMock()
+        mock_response.text = "ok"
+        self.mock_client.chats.create.side_effect = [
+            FakeAPIError(400, "400 INVALID_ARGUMENT: max 500 tokens"),
+            FakeAPIError(503, "UNAVAILABLE"),
+            self.mock_chat,
+        ]
+        self.mock_chat.send_message.return_value = mock_response
+
+        with patch("sys.stderr.write"):
+            self.assertEqual(self.ai.ask("test", "test"), "ok")
+        models = [c[1]["model"] for c in self.mock_client.chats.create.call_args_list]
+        self.assertEqual(models, [SommelierAI.FALLBACK_MODELS[0],
+                                  SommelierAI.FALLBACK_MODELS[1],
+                                  SommelierAI.FALLBACK_MODELS[1]])
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    @patch("time.sleep")
+    def test_429_is_never_retried_on_same_model(self, mock_sleep):
+        # "429 ... unavailable" style text must still count as quota, not transient.
+        self.mock_client.chats.create.side_effect = Exception(
+            "429 RESOURCE_EXHAUSTED: capacity temporarily unavailable"
+        )
+        with patch("sys.stderr.write"):
+            with self.assertRaises(RuntimeError):
+                self.ai.ask("test", "test")
+        self.assertEqual(self.mock_client.chats.create.call_count,
+                         len(SommelierAI.FALLBACK_MODELS))
         mock_sleep.assert_not_called()
 
     def test_exhaust_all_fallbacks(self):
-        """Verify that a 429 on all models raises the final quota exhaustion exception."""
+        """Every model failing raises one RuntimeError chained to the last error."""
         self.mock_client.chats.create.side_effect = Exception("429 Quota Exceeded")
 
         with patch("sys.stderr.write"):
-            with self.assertRaisesRegex(RuntimeError, "All fallback models exhausted due to quota/rate limits"):
+            with self.assertRaisesRegex(RuntimeError, "All fallback models exhausted"):
                 self.ai.ask("test", "test")
 
         self.assertEqual(self.mock_client.chats.create.call_count, len(SommelierAI.FALLBACK_MODELS))
+
+    # ---- model chain + prompt context -------------------------------------
+
+    def test_fallback_models_are_current_api_codes(self):
+        # Retired/misspelled codes 404 and silently waste a hop in the chain.
+        for retired in ("gemma-4-31b", "gemini-3-flash", "gemini-2.5-flash"):
+            self.assertNotIn(retired, SommelierAI.FALLBACK_MODELS)
+        self.assertEqual(SommelierAI.FALLBACK_MODELS[0], "gemini-3.5-flash-lite")
+        gemma = [m for m in SommelierAI.FALLBACK_MODELS if m.startswith("gemma")]
+        self.assertTrue(all(m.endswith("-it") for m in gemma))
+
+    def test_ask_puts_todays_date_in_system_instruction(self):
+        mock_response = MagicMock()
+        mock_response.text = "ok"
+        self.mock_chat.send_message.return_value = mock_response
+        with patch("sommelier_ai.types.GenerateContentConfig") as cfg:
+            self.ai.ask("is it ready?", "inv")
+        instruction = cfg.call_args[1]["system_instruction"]
+        self.assertIn(self.ai._today_line(), instruction)
+
+    def test_extraction_includes_todays_date(self):
+        mock_response = MagicMock()
+        mock_response.text = "[]"
+        self.mock_client.models.generate_content.return_value = mock_response
+        self.ai.extract_wines_from_text("Flam Classico 2021")
+        contents = self.mock_client.models.generate_content.call_args[1]["contents"]
+        self.assertIn(self.ai._today_line(), contents)
+
+    def test_ask_skips_malformed_history_entries(self):
+        mock_response = MagicMock()
+        mock_response.text = "ok"
+        self.mock_chat.send_message.return_value = mock_response
+        history = [
+            {"role": "user", "text": "hi"},
+            {"text": "no role"},
+            "not a dict",
+            {"role": "system", "text": "bad role"},
+            {"role": "model", "text": ""},
+            {"role": "model", "text": "hello"},
+        ]
+        self.assertEqual(self.ai.ask("q", "inv", history=history), "ok")
+        sent_history = self.mock_client.chats.create.call_args[1]["history"]
+        self.assertEqual(len(sent_history), 2)
 
     # ---- voice transcription --------------------------------------------
 
@@ -199,6 +315,17 @@ class TestSommelierAI(unittest.TestCase):
             {"row": 3, "status": "Closed", "values": ["Flam", "Classico", "", "2021"]}])
         self.assertEqual(out, {"intent": "set_status", "wine_row": 3,
                                "status": "Open", "details": ""})
+
+    def test_parse_request_salvages_prose_wrapped_json(self):
+        # gemma can't be forced into JSON mode and may wrap the object in prose.
+        mock_response = MagicMock()
+        mock_response.text = ('Here is the routing:\n'
+                              '{"intent":"delete_wine","wine_row":4,"status":"","details":""}'
+                              '\nHope that helps!')
+        self.mock_client.models.generate_content.return_value = mock_response
+        out = self.ai.parse_request("תמחק את צורה", wines=[])
+        self.assertEqual(out["intent"], "delete_wine")
+        self.assertEqual(out["wine_row"], 4)
 
     def test_parse_request_unknown_label_defaults_chat(self):
         mock_response = MagicMock()

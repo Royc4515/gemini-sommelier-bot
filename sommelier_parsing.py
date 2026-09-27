@@ -68,7 +68,16 @@ def parse_request(raw: str) -> dict:
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        return CHAT_REQUEST.copy()
+        # reason: the gemma fallback can't be forced into JSON mode and may wrap
+        # the object in prose ("Here is the routing: {...}"). Salvage the object
+        # rather than silently downgrading a real request to chat.
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return CHAT_REQUEST.copy()
+        try:
+            data = json.loads(match.group(0))
+        except (json.JSONDecodeError, ValueError):
+            return CHAT_REQUEST.copy()
     if not isinstance(data, dict):
         return CHAT_REQUEST.copy()
 

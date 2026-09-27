@@ -26,6 +26,7 @@ resume mid-edit.
 import re
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from cellar import (
     CellarBackend,
@@ -356,14 +357,27 @@ def _record_from_values(values: list) -> dict:
 
 
 def _format_date(val) -> str:
-    """Turn an ISO datetime (e.g. '2026-04-17T00:00:00.000Z') into '17/04/2026'.
-    Leaves anything that is not an ISO datetime untouched."""
+    """Turn an ISO datetime (e.g. '2026-04-16T21:00:00.000Z') into '17/04/2026'.
+
+    A sheet date is local MIDNIGHT in the spreadsheet's timezone, which Apps
+    Script serializes in UTC. For Israel (UTC+2/+3) that lands on the PREVIOUS
+    day (21:00Z / 22:00Z), so reading the UTC date would show - and on save,
+    write back - a purchase date one day early, drifting a day per edit. Rounding
+    to the nearest UTC day recovers the local date for any offset within +-12h.
+    Leaves anything that is not an ISO datetime untouched.
+    """
     s = str(val).strip()
-    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})T", s)
-    if m:
-        year, month, day = m.groups()
-        return f"{day}/{month}/{year}"
-    return s
+    if not re.match(r"^\d{4}-\d{2}-\d{2}T", s):
+        return s
+    try:
+        # fromisoformat only accepts a 'Z' suffix from Python 3.11 on.
+        moment = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return s
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc)
+    local_day = (moment + timedelta(hours=12)).date()
+    return local_day.strftime("%d/%m/%Y")
 
 
 # Accessors that read the picker's name/vintage/status off /editwine's rec-shaped

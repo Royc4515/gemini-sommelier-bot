@@ -241,6 +241,12 @@ class ApplyFillTests(unittest.TestCase):
         _apply_fill(records, "כמות: 3")
         self.assertEqual(records[0]["quantity"], 3)
 
+    def test_quantity_superscript_digit_ignored_not_crash(self):
+        # '²'.isdigit() is True but int('²') raises; it must be ignored.
+        records = [_build_record({"wine_name": "X"})]
+        _apply_fill(records, "כמות: ²")
+        self.assertEqual(records[0]["quantity"], 1)
+
     def test_multi_wine_applies_to_all_without_index(self):
         records = [_build_record({"wine_name": "A"}),
                    _build_record({"wine_name": "B"})]

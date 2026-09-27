@@ -305,5 +305,59 @@ class TestWebhookDeleteRouting(unittest.TestCase):
         mock_cb.assert_called_once()
 
 
+class TestWebhookStaleButtonsAndCancel(unittest.TestCase):
+    """Taps no flow owns still get answered; a stray /cancel gets a reply."""
+
+    def test_unclaimed_callback_is_still_answered(self):
+        env = _make_environ(body={"callback_query": {
+            "id": "c9", "data": "retired:flow:tok",
+            "message": {"chat": {"id": 999}, "message_id": 5}}})
+        with patch("cellar.CellarBackend.get_state", return_value=None), \
+             patch("telegram_client.TelegramClient.answer_callback_query") as mock_ans:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_ans.assert_called_once()
+        self.assertEqual(mock_ans.call_args[0][0], "c9")
+
+    def test_claimed_callback_is_not_double_answered(self):
+        env = _make_environ(body={"callback_query": {
+            "id": "c1", "data": "delete:confirm:tok",
+            "message": {"chat": {"id": 999}, "message_id": 5}}})
+        with patch("deletewine.DeleteWine.handle_callback", return_value=True), \
+             patch("telegram_client.TelegramClient.answer_callback_query") as mock_ans:
+            _call_app(env)
+        mock_ans.assert_not_called()
+
+    def test_cancel_outside_any_flow_replies_without_ai(self):
+        env = _make_environ(body={"message": {"text": "/cancel", "chat": {"id": 999}}})
+        with patch("cellar.CellarBackend.get_state", return_value=None), \
+             patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("sommelier_ai.SommelierAI.parse_request") as mock_parse, \
+             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_parse.assert_not_called()
+        mock_ask.assert_not_called()
+        mock_send.assert_called_once()
+        self.assertIn("אין כרגע פעולה פעילה", mock_send.call_args[1]["text"])
+
+    def test_cancel_drops_a_pending_orchestrator_confirm(self):
+        env = _make_environ(body={"message": {"text": "/cancel", "chat": {"id": 999}}})
+        pending = {"flow": "orch", "action": "delete", "token": "t", "row": 3}
+
+        def fake_get_state(key):
+            return pending if key == "orch:999" else None
+
+        with patch("cellar.CellarBackend.get_state", side_effect=fake_get_state), \
+             patch("cellar.CellarBackend.clear_state") as mock_clear, \
+             patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_clear.assert_called_once_with("orch:999")
+        mock_ask.assert_not_called()
+        self.assertIn("בוטל", mock_send.call_args[1]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()

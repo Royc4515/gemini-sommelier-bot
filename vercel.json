@@ -1,9 +1,9 @@
 {
-  "version": 2,
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/**/*.py": {
-      "runtime": "@vercel/python@4.2.0",
-      "maxDuration": 60
+      "maxDuration": 60,
+      "excludeFiles": "{tests/**,specs/**,assets/**,.github/**}"
     }
   },
   "routes": [

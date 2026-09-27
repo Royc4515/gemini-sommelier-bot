@@ -211,6 +211,23 @@ class Orchestrator:
             chat_id, f"✅ {state.get('name', '')}: {_STATUS_HE[value]}"
         )
 
+    @classmethod
+    def cancel_pending(cls, chat_id: str) -> bool:
+        """Drop a pending confirm (the '/cancel' path). True if one existed.
+
+        A classmethod so /cancel doesn't have to build the AI client just to
+        clear a state row. A stale button tapped afterwards finds no token and
+        answers "כבר טופל".
+        """
+        backend = CellarBackend()
+        if not backend.get_state(cls._key(chat_id)):
+            return False
+        try:
+            backend.clear_state(cls._key(chat_id))
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: orchestrator cancel failed: {exc}\n")
+        return True
+
     # ---- helpers ----------------------------------------------------------
 
     @staticmethod

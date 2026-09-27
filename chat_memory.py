@@ -57,10 +57,21 @@ class ChatMemory:
             doc = self._fetch_document(chat_id)
         except Exception:
             return [], ""
+        if not isinstance(doc, dict):
+            return [], ""
 
-        active_history: list[dict] = doc.get("active_history", [])
-        long_term_summary: str = doc.get("long_term_summary", "")
-        updated_at: float = doc.get("updated_at", 0.0)
+        active_history = doc.get("active_history") or []
+        if not isinstance(active_history, list):
+            active_history = []
+        long_term_summary = doc.get("long_term_summary") or ""
+        if not isinstance(long_term_summary, str):
+            long_term_summary = str(long_term_summary)
+        # The sheet cell can come back as "" or a formatted string; a non-number
+        # must not crash every chat answer (treat it as an expired session).
+        try:
+            updated_at = float(doc.get("updated_at") or 0.0)
+        except (TypeError, ValueError):
+            updated_at = 0.0
 
         # Check if session has expired
         session_expired = (time.time() - updated_at) > self.SESSION_TIMEOUT_SEC
