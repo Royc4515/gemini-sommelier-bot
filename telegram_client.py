@@ -10,6 +10,8 @@ import re
 import urllib.error
 import urllib.request
 
+import timing
+
 
 # Telegram caps a message at 4096 visible characters; keep a safety margin.
 _MAX_CHUNK = 4000
@@ -102,8 +104,9 @@ class TelegramClient:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with timing.stage("tg:send"):
+                with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
+                    return json.loads(response.read().decode("utf-8"))
 
         last_result = None
         for index, chunk in enumerate(chunks):
@@ -146,8 +149,9 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        with timing.stage("tg:file"):
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
+                result = json.loads(response.read().decode("utf-8"))
         return result["result"]["file_path"]
 
     def download_file(self, file_path: str) -> bytes:
@@ -157,8 +161,9 @@ class TelegramClient:
         API host used for method calls.
         """
         url = f"{self.BASE_URL}/file/bot{self.token}/{file_path}"
-        with urllib.request.urlopen(url, timeout=self.DOWNLOAD_TIMEOUT_SEC) as response:
-            return response.read()
+        with timing.stage("tg:download"):
+            with urllib.request.urlopen(url, timeout=self.DOWNLOAD_TIMEOUT_SEC) as response:
+                return response.read()
 
     def download_photo(self, file_id: str) -> bytes:
         """Convenience: resolve a *file_id* and return its bytes."""
@@ -189,8 +194,9 @@ class TelegramClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with timing.stage("tg:typing"):
+                with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
+                    return json.loads(response.read().decode("utf-8"))
         except Exception:
             return {}
 
@@ -204,8 +210,9 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with timing.stage("tg:commands"):
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
+                return json.loads(response.read().decode("utf-8"))
 
     # ------------------------------------------------------------------
     # Inline keyboard callbacks (used by the /addwine confirmation)
@@ -222,8 +229,9 @@ class TelegramClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with timing.stage("tg:answer_cb"):
+            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
+                return json.loads(response.read().decode("utf-8"))
 
     def edit_message_reply_markup(
         self,
@@ -246,8 +254,9 @@ class TelegramClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with timing.stage("tg:edit_kb"):
+                with urllib.request.urlopen(req, timeout=self.TIMEOUT_SEC) as response:
+                    return json.loads(response.read().decode("utf-8"))
         except Exception:
             # Best-effort: a failed keyboard cleanup must not block the append.
             return {}

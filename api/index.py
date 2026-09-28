@@ -30,6 +30,7 @@ from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
 from wine_inventory import WineInventory  # noqa: E402
+import timing                             # noqa: E402
 
 
 # The stateful write flows, in priority order. A message is offered to each in
@@ -242,6 +243,17 @@ def application(environ, start_response):
     if incoming_secret != expected_secret:
         return _respond("401 Unauthorized", "Unauthorized")
 
+    # One timing line per authenticated request, whatever route it takes
+    # (spec 007): stage names + durations only, never message content.
+    token = timing.start()
+    try:
+        return _route_update(environ, _respond)
+    finally:
+        timing.finish(token)
+
+
+def _route_update(environ, _respond):
+    """Parse the update and walk it through the routing stages in priority order."""
     # --- Read body ---
     try:
         content_length = int(environ.get("CONTENT_LENGTH", 0))
@@ -253,6 +265,7 @@ def application(environ, start_response):
     try:
         update = json.loads(body)
     except (json.JSONDecodeError, ValueError):
+        timing.set_route("bad_request")
         return _respond("400 Bad Request", "Bad Request")
 
     allowed_user_id = os.environ.get("ALLOWED_USER_ID", "")
@@ -260,12 +273,20 @@ def application(environ, start_response):
     # --- Inline-button taps (used by the flow confirmations) ---
     callback = update.get("callback_query")
     if callback:
+        timing.set_kind("callback")
+        # The callback namespace (addwine / status / orch ...) is our own label,
+        # not user content, so it is safe to log.
+        timing.set_route(f"callback:{str(callback.get('data') or '').split(':')[0]}")
         return _respond(*_handle_callback_query(callback, allowed_user_id))
 
     # --- Extract message ---
     message = update.get("message")
     if not message:
+        timing.set_route("no_message")
         return _respond("200 OK", "OK — no message")
+    timing.set_kind(
+        "voice" if message.get("voice") else "photo" if message.get("photo") else "text"
+    )
 
     # --- Authorization: restrict to allowed user ---
     chat_id = message["chat"]["id"]
@@ -277,11 +298,13 @@ def application(environ, start_response):
             )
         except Exception:
             pass
+        timing.set_route("unauthorized")
         return _respond("200 OK", "OK — unauthorized user")
 
     # --- Voice notes: transcribe to text, then route like any text message ---
     voice_result = _normalize_voice_to_text(message, chat_id)
     if voice_result:
+        timing.set_route("voice_failed")
         return _respond(*voice_result)
 
     # --- Write flows (/addwine, /editwine, /status, /delete + in-flow text/photos) ---
@@ -290,8 +313,10 @@ def application(environ, start_response):
     try:
         for flow_cls in _MESSAGE_FLOWS:
             if flow_cls().handle_message(str(chat_id), message):
+                timing.set_route(f"flow:{flow_cls.__name__.lower()}")
                 return _respond(*_OK)
     except Exception as exc:
+        timing.set_route("flow_error")
         sys.stderr.write(f"ERROR: /addwine|/editwine|/status|/delete flow failed: {exc}\n")
         try:
             TelegramClient().send_message(chat_id=chat_id, text="⚠️ שגיאה בעיבוד הבקשה. נסה שוב.")
@@ -302,16 +327,19 @@ def application(environ, start_response):
     # --- Bare photo (outside any flow): wine label -> info, food -> pairing ---
     photo_result = _handle_bare_photo(message, chat_id)
     if photo_result:
+        timing.set_route("photo")
         return _respond(*photo_result)
 
     # --- Safety: ignore non-text messages ---
     text = message.get("text")
     if not text:
+        timing.set_route("ignored")
         return _respond("200 OK", "OK — non-text ignored")
 
     # ---- Handle bot commands (/reset, /start) ----
     command_result = _handle_command(text, chat_id)
     if command_result:
+        timing.set_route("command")
         return _respond(*command_result)
 
     # --- Orchestrator: free text -> act on the request, else chat ---
@@ -321,11 +349,12 @@ def application(environ, start_response):
     # sommelier answer runs unchanged.
     try:
         if Orchestrator().maybe_handle(str(chat_id), text):
-            return _respond(*_OK)
+            return _respond(*_OK)  # the orchestrator set its orch:<intent> route
     except Exception as exc:
         sys.stderr.write(f"ERROR: orchestrator failed: {exc}\n")
 
     # --- Default: answer as the sommelier (shared chat path) ---
+    timing.set_route("chat")
     answer_chat(chat_id, text)
     return _respond(*_OK)
 

@@ -1,0 +1,107 @@
+"""
+timing.py — per-request stage timing (spec 007).
+
+One timer per webhook request, held in a ContextVar so the I/O choke points
+(Apps Script, the cellar CSV, Gemini, Telegram) can record a stage without any
+object being threaded through the flows. The webhook calls finish() once on the
+way out, which prints a single line, e.g.:
+
+    TIMING in=text route=chat total=27.41 as:get:addwine_state=2.10 ... tg:send=0.41
+
+Only input kind, route, stage names and durations are logged: never message
+text, names, chat ids, URLs or secrets (spec 007 AC 1). Outside a request
+(tests, scripts) every call is a cheap no-op. Stdlib only (constitution §1).
+"""
+
+import contextvars
+import threading
+import time
+from contextlib import contextmanager
+
+_current: contextvars.ContextVar = contextvars.ContextVar("request_timer", default=None)
+
+
+class _RequestTimer:
+    """Stages recorded for one request. Shared by worker threads, so locked."""
+
+    def __init__(self, kind: str):
+        self.kind = kind
+        self.route = "unknown"
+        self.started = time.perf_counter()
+        self._stages: list[tuple[str, float]] = []
+        self._lock = threading.Lock()
+
+    def add(self, name: str, seconds: float) -> None:
+        with self._lock:
+            self._stages.append((name, seconds))
+
+    def line(self) -> str:
+        total = time.perf_counter() - self.started
+        with self._lock:
+            parts = [f"{name}={secs:.2f}" for name, secs in self._stages]
+        return " ".join(
+            [f"TIMING in={self.kind}", f"route={self.route}", f"total={total:.2f}", *parts]
+        )
+
+
+def start(kind: str = "unknown") -> contextvars.Token:
+    """Open this request's timer; pass the returned token to finish()."""
+    return _current.set(_RequestTimer(kind))
+
+
+def set_kind(kind: str) -> None:
+    """Record what arrived (text / voice / photo / callback)."""
+    timer = _current.get()
+    if timer is not None:
+        timer.kind = kind
+
+
+def set_route(route: str) -> None:
+    """Record which path handled the request (chat, flow:addwine, orch:set_status...)."""
+    timer = _current.get()
+    if timer is not None:
+        timer.route = route
+
+
+@contextmanager
+def stage(name: str):
+    """Time the enclosed block as *name*; a raising block is logged as name(fail)."""
+    timer = _current.get()
+    if timer is None:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    except BaseException:
+        timer.add(f"{name}(fail)", time.perf_counter() - t0)
+        raise
+    timer.add(name, time.perf_counter() - t0)
+
+
+def finish(token: contextvars.Token | None = None) -> None:
+    """Print this request's TIMING line and close the timer. Never raises."""
+    try:
+        timer = _current.get()
+        if timer is not None:
+            print(timer.line(), flush=True)
+    except Exception:
+        pass
+    finally:
+        try:
+            if token is not None:
+                _current.reset(token)
+            else:
+                _current.set(None)
+        except Exception:
+            _current.set(None)
+
+
+def run_in(executor, fn, *args, **kwargs):
+    """Submit *fn* to *executor* inside a copy of the current context.
+
+    A Context can't be entered by two threads at once, so each task gets its own
+    copy; the timer object inside it is shared, which is what we want.
+    """
+    ctx = contextvars.copy_context()
+    return executor.submit(ctx.run, fn, *args, **kwargs)

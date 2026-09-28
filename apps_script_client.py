@@ -17,6 +17,8 @@ import os
 import urllib.parse
 import urllib.request
 
+import timing
+
 
 class AppsScriptClient:
     """Secret-signed JSON transport over the shared Apps Script Web App.
@@ -46,8 +48,9 @@ class AppsScriptClient:
         if self._secret:
             query["key"] = self._secret
         url = f"{self._url}?{urllib.parse.urlencode(query)}"
-        with urllib.request.urlopen(url, timeout=self._timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        with timing.stage(_stage_name("get", params)):
+            with urllib.request.urlopen(url, timeout=self._timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
 
     def post_json(self, payload: dict) -> dict:
         """POST *payload* as JSON, signing it with the secret; return parsed JSON.
@@ -64,6 +67,21 @@ class AppsScriptClient:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            raw = resp.read().decode("utf-8")
+        with timing.stage(_stage_name("post", payload)):
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read().decode("utf-8")
         return json.loads(raw) if raw else {}
+
+
+def _stage_name(verb: str, fields: dict) -> str:
+    """Timing label for one round trip: the action, never the chat id (spec 007).
+
+    Flow-state keys look like "<chat_id>" (addwine) or "<ns>:<chat_id>", so the
+    namespace alone tells the four per-message state reads apart.
+    """
+    action = fields.get("action", "memory")
+    if action == "addwine_state":
+        key = str(fields.get("chat_id", ""))
+        namespace = key.split(":", 1)[0] if ":" in key else "addwine"
+        return f"as:{verb}:state:{namespace}"
+    return f"as:{verb}:{action}"

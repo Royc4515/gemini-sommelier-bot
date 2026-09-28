@@ -1,6 +1,6 @@
 # Feature 007 — Faster replies (cut serial round trips)
 
-**Status:** draft (awaiting owner approval)
+**Status:** approved (owner delegated the open decisions to Claude, 2026-09-28)
 **Author/date:** Claude / 2026-09-28
 
 ## Why
@@ -54,7 +54,7 @@ intent parse (model) → memory read → cellar CSV → answer (model) → memor
    the indicator is refreshed so it never lapses (Telegram clears it after about
    5 s). It stops once the reply is out or the request fails.
 6. **Target.** Over at least 5 live plain chat questions, the median time until
-   the reply appears is **at least 30% lower** than the AC 2 baseline. No live
+   the reply appears is **at least 40% lower** than the AC 2 baseline. No live
    test request (chat, voice, photo, flow steps, taps) exceeds 45 s.
 7. **Behavior unchanged.** Same routing priority (active flows → bare photo →
    commands → orchestrator → chat), same replies, same sheet writes, same
@@ -66,6 +66,12 @@ intent parse (model) → memory read → cellar CSV → answer (model) → memor
    later stage turns out not to need is discarded, never acted on.
 9. **No cross-request state.** Nothing fetched for one request is reused by
    another (every value is discarded when the request ends).
+10. **Speculative answer.** For free text that reaches the orchestrator, the
+    chat answer is drafted at the same time as the intent is parsed. If the
+    intent is chat, that draft is the reply. If it is an action, the draft is
+    discarded: never sent, never written to memory. A plain chat message makes
+    no more model calls than today (intent + answer); only an action message
+    costs one extra, discarded call.
 
 ## Non-goals (explicitly out of scope)
 - **Apps Script changes** (a batched "all states" endpoint, LockService, faster
@@ -73,17 +79,19 @@ intent parse (model) → memory read → cellar CSV → answer (model) → memor
   AC 6 isn't met Python-side. The 46 s outlier is diagnosed with AC 1 first.
 - **Model or prompt changes** (thinking level, a different primary model).
   Decided from AC 1 data in a separate change.
-- **Speculative model calls** (drafting the chat answer in parallel with intent
-  parsing). It would roughly double model usage per message; see open question 1.
 - Streaming or partial replies; caching across requests; webhook retries.
 
-## Open questions (for the owner)
-1. **Speculative answer?** Starting the chat answer at the same time as intent
-   parsing could save one model call of wait (roughly 5-10 s) on every plain
-   question, at about twice the Gemini usage (the draft is thrown away when the
-   message turns out to be an action). Default in this spec: **no**.
-2. **Target level.** Is "30% faster median, nothing over 45 s" the right bar,
-   or should the bar be an absolute number (for example, "chat reply under 15 s")?
+## Decisions (owner delegated both open questions, 2026-09-28)
+1. **Speculative answer: yes (AC 10).** The draft's cost is lower than first
+   estimated: plain chat messages, the large majority, still make exactly two
+   model calls; only action messages (add / edit / status / delete) pay one extra,
+   discarded call. In exchange, the intent-parse call leaves the critical path of
+   every question.
+2. **Target: relative, 40% (AC 6), plus the 45 s cap.** Raised from 30% because
+   decision 1 removes a whole model call from the wait. It stays relative, not an
+   absolute number of seconds, because without the stage breakdown (AC 1-2) an
+   absolute figure would be a guess about Apps Script and Gemini latency. The
+   plan may add an absolute target once the baseline is measured.
 
 ## Constitution check
 - §1 Minimal runtime: concurrency and timing use the Python standard library
