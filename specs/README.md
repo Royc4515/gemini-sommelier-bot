@@ -42,4 +42,4 @@ specs/
 | 004 | Smart photo (wine vs food) | approved | approved | approved | ✅ live-verified |
 | 005 | Remove a bottle (/delete) | approved | approved | approved | code done; redeploy + smoke pending |
 | 006 | Orchestrator (NL router) | approved | approved | approved | code done; live smoke pending |
-| 007 | Faster replies (cut serial round trips) | approved | approved | approved | phase 1 (timing) code done; baseline pending |
+| 007 | Faster replies (cut serial round trips) | approved | approved | approved | phase 1 live + baseline measured; phase 2 code done; live after-measurement pending |

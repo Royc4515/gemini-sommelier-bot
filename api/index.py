@@ -15,6 +15,7 @@ the routing policy rather than a wall of nested branches.
 import json
 import os
 import sys
+from concurrent import futures
 
 # Allow imports from the project root (one level up from api/)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -24,7 +25,8 @@ from editwine import EditWine             # noqa: E402
 from statuswine import StatusWine         # noqa: E402
 from deletewine import DeleteWine          # noqa: E402
 from orchestrator import Orchestrator      # noqa: E402
-from chat_flow import answer_chat          # noqa: E402
+from cellar import CellarBackend, prefetch_states, request_state_cache  # noqa: E402
+from chat_flow import ChatDraft            # noqa: E402
 from set_commands import BOT_COMMANDS     # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
@@ -247,7 +249,9 @@ def application(environ, start_response):
     # (spec 007): stage names + durations only, never message content.
     token = timing.start()
     try:
-        return _route_update(environ, _respond)
+        # Flow states read in this request are cached for it alone (AC 9).
+        with request_state_cache():
+            return _route_update(environ, _respond)
     finally:
         timing.finish(token)
 
@@ -307,9 +311,37 @@ def _route_update(environ, _respond):
         timing.set_route("voice_failed")
         return _respond(*voice_result)
 
+    with timing.request_pool() as pool:
+        return _route_message(pool, message, chat_id, _respond)
+
+
+def _route_message(pool, message: dict, chat_id, _respond):
+    """Walk a message through flows -> bare photo -> commands -> orchestrator -> chat.
+
+    Every read this message may need starts up front, together (spec 007 AC 3):
+    the four flow states always, and for a plain question (the common case, not a
+    /command) also the cellar list, memory and CSV the orchestrator and the chat
+    answer use. The routing order below is unchanged; a read a stage turns out
+    not to need is dropped when the request ends (AC 8).
+    """
+    text = message.get("text") or ""
+    plain_question = bool(text.strip()) and not text.strip().startswith("/")
+    states = prefetch_states(
+        pool, [flow.state_key(str(chat_id)) for flow in _MESSAGE_FLOWS]
+    )
+    wines = draft = None
+    if plain_question:
+        wines = timing.run_in(pool, CellarBackend().list_wines)
+        draft = ChatDraft(pool, chat_id)
+        with TelegramClient().keep_typing(chat_id):
+            futures.wait(states)
+    else:
+        futures.wait(states)
+
     # --- Write flows (/addwine, /editwine, /status, /delete + in-flow text/photos) ---
     # Runs before the non-text guard so it can receive label photos. Each returns
-    # True only when the update belongs to an active flow (or starts one).
+    # True only when the update belongs to an active flow (or starts one); their
+    # state checks are answered from the prefetch above.
     try:
         for flow_cls in _MESSAGE_FLOWS:
             if flow_cls().handle_message(str(chat_id), message):
@@ -331,7 +363,6 @@ def _route_update(environ, _respond):
         return _respond(*photo_result)
 
     # --- Safety: ignore non-text messages ---
-    text = message.get("text")
     if not text:
         timing.set_route("ignored")
         return _respond("200 OK", "OK — non-text ignored")
@@ -342,21 +373,52 @@ def _route_update(environ, _respond):
         timing.set_route("command")
         return _respond(*command_result)
 
-    # --- Orchestrator: free text -> act on the request, else chat ---
-    # Sits just above the chat fallback. It resolves which bottle and what action
-    # the user meant and drives it (a one-tap confirm, or the right flow); on chat
-    # (the conservative default) or any failure it returns False and the normal
-    # sommelier answer runs unchanged.
+    # --- Orchestrator, else the sommelier answer ---
+    _act_or_answer(pool, chat_id, text, wines, draft)
+    return _respond(*_OK)
+
+
+def _act_or_answer(pool, chat_id, text: str, wines, draft: ChatDraft) -> None:
+    """Orchestrator + chat fallback, with the answer drafted in parallel (AC 10).
+
+    The orchestrator resolves which bottle and what action the user meant and
+    drives it (a one-tap confirm, or the right flow). The chat answer is drafted
+    at the same time as that intent parse, so a question doesn't wait for two
+    model calls in a row. On a chat intent (the conservative default) or any
+    orchestrator failure the draft is the reply; on an action the orchestrator
+    acts and the draft is dropped, never sent or saved.
+    """
+    # Text that wasn't prefetched as a plain question (an unknown /command,
+    # whitespace) still gets the same path, just without the head start.
+    if wines is None:
+        wines = timing.run_in(pool, CellarBackend().list_wines)
+    if draft is None:
+        draft = ChatDraft(pool, chat_id)
+
+    orchestrator = parse = None
     try:
-        if Orchestrator().maybe_handle(str(chat_id), text):
-            return _respond(*_OK)  # the orchestrator set its orch:<intent> route
+        orchestrator = Orchestrator()
+        parse = timing.run_in(pool, lambda: orchestrator.decide(text, wines.result()))
     except Exception as exc:
         sys.stderr.write(f"ERROR: orchestrator failed: {exc}\n")
+    draft.start(text)
 
-    # --- Default: answer as the sommelier (shared chat path) ---
+    request = None
+    if parse is not None:
+        try:
+            with TelegramClient().keep_typing(chat_id):
+                request = parse.result()
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: orchestrator parse failed: {exc}\n")
+    if request is not None:
+        try:
+            if orchestrator.act(str(chat_id), request, text, wines.result()):
+                return  # the orchestrator set its orch:<intent> route
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: orchestrator failed: {exc}\n")
+
     timing.set_route("chat")
-    answer_chat(chat_id, text)
-    return _respond(*_OK)
+    draft.deliver()
 
 # Vercel zero-configuration requires an `app` variable for WSGI applications.
 app = application

@@ -285,5 +285,32 @@ class TestVoiceAndMenu(unittest.TestCase):
         self.assertEqual(out, b"audio")
 
 
+class TestKeepTyping(unittest.TestCase):
+    """keep_typing refreshes the indicator while the block runs (spec 007 AC 5)."""
+
+    def test_refreshes_during_the_block_and_stops_after(self):
+        import time
+        client = TelegramClient()
+        with patch.object(client, "send_chat_action") as mock_action:
+            with client.keep_typing(42, every=0.05):
+                time.sleep(0.3)
+            calls_at_exit = mock_action.call_count
+            time.sleep(0.2)
+        self.assertGreaterEqual(calls_at_exit, 3)          # kept alive, not one-shot
+        self.assertEqual(mock_action.call_count, calls_at_exit)  # stopped on exit
+        mock_action.assert_called_with(42, "typing")
+
+    def test_stops_when_the_block_raises(self):
+        import time
+        client = TelegramClient()
+        with patch.object(client, "send_chat_action") as mock_action:
+            with self.assertRaises(ValueError):
+                with client.keep_typing(42, every=0.05):
+                    raise ValueError("boom")
+            calls_at_exit = mock_action.call_count
+            time.sleep(0.2)
+        self.assertEqual(mock_action.call_count, calls_at_exit)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,7 +64,21 @@ def _call_app(environ: dict) -> tuple[str, bytes]:
         status_holder.append(status)
 
     chunks = idx.application(environ, start_response)
+    _settle()
     return status_holder[0], b"".join(chunks)
+
+
+def _settle(timeout: float = 5.0) -> None:
+    """Wait for the request's background workers (spec 007) to finish.
+
+    The webhook returns without awaiting reads or a draft it no longer needs;
+    joining them here keeps each test's patches in force until that work is done,
+    so assertions never race a worker.
+    """
+    import threading
+    for thread in threading.enumerate():
+        if thread.name.startswith(("req_", "keep-typing")):
+            thread.join(timeout)
 
 
 class TestWebhookSecurity(unittest.TestCase):
@@ -145,24 +159,32 @@ class TestWebhookAuthorization(unittest.TestCase):
         mock_ask.assert_called_once()
         mock_send.assert_called_once()
 
-    def test_action_intent_acts_instead_of_answering(self):
+    def test_action_intent_acts_and_drops_the_draft(self):
+        # Spec 007 AC 10: the chat answer is drafted alongside the intent parse;
+        # on an action it must never be sent or written to memory.
         env = _make_environ(body={"message": {"text": "פתחתי את הפלם", "chat": {"id": 999}}})
         wines = [{"row": 2, "status": "Closed",
                   "values": ["Flam", "Classico", "אדום", "2021"] + [""] * 10}]
         with patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("telegram_client.TelegramClient.send_chat_action"), \
+             patch("cellar.CellarBackend.get_state", return_value=None), \
              patch("cellar.CellarBackend.list_wines", return_value=wines), \
              patch("cellar.CellarBackend.set_state"), \
+             patch("chat_memory.ChatMemory.get_context", return_value=([], "")), \
+             patch("chat_memory.ChatMemory.save_turn") as mock_save, \
+             patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="inv"), \
              patch("sommelier_ai.SommelierAI.parse_request",
                    return_value={"intent": "set_status", "wine_row": 2,
                                  "status": "Open", "details": ""}), \
-             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+             patch("sommelier_ai.SommelierAI.ask", return_value="DRAFT-ANSWER"):
             status, _ = _call_app(env)
         self.assertEqual(status, "200 OK")
-        mock_ask.assert_not_called()              # acted instead of chatting
         sent = " ".join(c.args[1] if len(c.args) > 1 else c.kwargs.get("text", "")
                         for c in mock_send.call_args_list)
-        self.assertIn("לסמן את", sent)
+        self.assertIn("לסמן את", sent)            # acted instead of chatting
         self.assertIn("Flam - Classico", sent)
+        self.assertNotIn("DRAFT-ANSWER", sent)    # draft never sent...
+        mock_save.assert_not_called()             # ...and never saved
 
 
 class TestWebhookVoice(unittest.TestCase):
@@ -380,14 +402,19 @@ class TestWebhookTimingLine(unittest.TestCase):
         status, lines = self._timing_lines(env, (
             ("cellar.CellarBackend.get_state", {"return_value": None}),
             ("cellar.CellarBackend.list_wines", {"return_value": []}),
+            ("chat_memory.ChatMemory.get_context", {"return_value": ([], "")}),
+            ("chat_memory.ChatMemory.save_turn", {}),
+            ("wine_inventory.WineInventory.get_formatted_inventory", {"return_value": "inv"}),
             ("sommelier_ai.SommelierAI.parse_request",
              {"return_value": {"intent": "chat", "wine_row": 0, "status": "", "details": ""}}),
-            ("chat_flow.answer_chat", {}),
-            ("api.index.answer_chat", {}),
+            ("sommelier_ai.SommelierAI.ask", {"return_value": self._MARKER}),
+            ("telegram_client.TelegramClient.send_message", {}),
+            ("telegram_client.TelegramClient.send_chat_action", {}),
         ))
         self.assertEqual(status, "200 OK")
         self.assertEqual(len(lines), 1)
         self.assertIn("in=text route=chat", lines[0])
+        self.assertIn(" reply_at=", lines[0])  # when the user saw it (AC 6)
         self.assertNotIn(self._MARKER, lines[0])
         self.assertNotIn("999", lines[0])
 
@@ -414,6 +441,145 @@ class TestWebhookTimingLine(unittest.TestCase):
         status, lines = self._timing_lines(env)
         self.assertEqual(status, "401 Unauthorized")
         self.assertEqual(lines, [])
+
+
+class TestWebhookConcurrency(unittest.TestCase):
+    """Spec 007 phase 2: reads together, parse alongside the draft, reply first."""
+
+    _CHAT = {"intent": "chat", "wine_row": 0, "status": "", "details": ""}
+
+    def _patches(self, stack, **overrides):
+        targets = {
+            "cellar.CellarBackend.get_state": {"return_value": None},
+            "cellar.CellarBackend.list_wines": {"return_value": []},
+            "chat_memory.ChatMemory.get_context": {"return_value": ([], "")},
+            "chat_memory.ChatMemory.save_turn": {},
+            "wine_inventory.WineInventory.get_formatted_inventory": {"return_value": "inv"},
+            "sommelier_ai.SommelierAI.parse_request": {"return_value": self._CHAT},
+            "sommelier_ai.SommelierAI.ask": {"return_value": "answer"},
+            "telegram_client.TelegramClient.send_message": {},
+            "telegram_client.TelegramClient.send_chat_action": {},
+        }
+        targets.update(overrides)
+        return {t: stack.enter_context(patch(t, **kw)) for t, kw in targets.items()}
+
+    def _run(self, text, **overrides):
+        import contextlib
+        env = _make_environ(body={"message": {"text": text, "chat": {"id": 999}}})
+        with contextlib.ExitStack() as stack:
+            mocks = self._patches(stack, **overrides)
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        return mocks
+
+    @staticmethod
+    def _sent(mock_send):
+        return [c.kwargs.get("text", c.args[1] if len(c.args) > 1 else "")
+                for c in mock_send.call_args_list]
+
+    def test_reads_and_model_calls_overlap(self):
+        # AC 3 + 10: 4 state reads + 3 context reads + 2 model calls at 0.3 s
+        # each would take 2.7 s one after another; overlapped they take ~0.6 s.
+        import time
+
+        def slow(value):
+            def _call(*args, **kwargs):
+                time.sleep(0.3)
+                return value
+            return {"side_effect": _call}
+
+        from cellar import CellarBackend
+        t0 = time.perf_counter()
+        mocks = self._run(
+            "מה לשתות עם דג?",
+            **{
+                # Slow the Apps Script read itself, not get_state, so the flows'
+                # own checks go through the request cache as in production.
+                "cellar.CellarBackend.get_state": {"autospec": True,
+                                                   "side_effect": CellarBackend.get_state},
+                "cellar.CellarBackend._read_state": slow(None),
+                "cellar.CellarBackend.list_wines": slow([]),
+                "chat_memory.ChatMemory.get_context": slow(([], "")),
+                "wine_inventory.WineInventory.get_formatted_inventory": slow("inv"),
+                "sommelier_ai.SommelierAI.parse_request": slow(self._CHAT),
+                "sommelier_ai.SommelierAI.ask": slow("answer"),
+            },
+        )
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(self._sent(mocks["telegram_client.TelegramClient.send_message"]),
+                         ["answer"])
+
+    def test_reply_is_sent_before_memory_is_saved(self):
+        order = []
+        self._run(
+            "מה לשתות עם דג?",
+            **{
+                "telegram_client.TelegramClient.send_message":
+                    {"side_effect": lambda *a, **k: order.append("send")},
+                "chat_memory.ChatMemory.save_turn":
+                    {"side_effect": lambda *a, **k: order.append("save")},
+            },
+        )
+        self.assertEqual(order, ["send", "save"])  # AC 4
+
+    def test_parse_failure_falls_back_to_the_drafted_answer(self):
+        mocks = self._run(
+            "מה לשתות עם דג?",
+            **{"sommelier_ai.SommelierAI.parse_request": {"side_effect": RuntimeError("x")}},
+        )
+        self.assertEqual(self._sent(mocks["telegram_client.TelegramClient.send_message"]),
+                         ["answer"])
+
+    def test_orchestrator_act_failure_falls_back_to_the_drafted_answer(self):
+        mocks = self._run(
+            "מה לשתות עם דג?",
+            **{
+                "sommelier_ai.SommelierAI.parse_request":
+                    {"return_value": {"intent": "delete_wine", "wine_row": 9,
+                                      "status": "", "details": ""}},
+                "orchestrator.Orchestrator.act": {"side_effect": RuntimeError("boom")},
+            },
+        )
+        self.assertEqual(self._sent(mocks["telegram_client.TelegramClient.send_message"]),
+                         ["answer"])
+
+    def test_unknown_command_still_reaches_the_answer(self):
+        # Not prefetched as a plain question (it starts with '/'), so the path
+        # builds its reads on the spot instead of crashing on a missing draft.
+        mocks = self._run("/wat")
+        self.assertEqual(self._sent(mocks["telegram_client.TelegramClient.send_message"]),
+                         ["answer"])
+
+    def test_message_claimed_by_a_flow_makes_no_model_call(self):
+        mocks = self._run(
+            "Flam Classico 2021",
+            **{"addwine.AddWine.handle_message": {"return_value": True}},
+        )
+        mocks["sommelier_ai.SommelierAI.parse_request"].assert_not_called()
+        mocks["sommelier_ai.SommelierAI.ask"].assert_not_called()
+        mocks["chat_memory.ChatMemory.save_turn"].assert_not_called()
+
+    def test_flows_read_their_state_from_the_prefetch(self):
+        # Each flow checks its own key; with the prefetch that is one read per key,
+        # not a second round trip from inside the flow.
+        from cellar import CellarBackend
+        calls = []
+
+        def fake_read(self, key):
+            calls.append(key)
+            return None
+
+        mocks = self._run(
+            "מה לשתות עם דג?",
+            **{"cellar.CellarBackend.get_state": {"autospec": True,
+                                                  "side_effect": CellarBackend.get_state},
+               "cellar.CellarBackend._read_state": {"autospec": True,
+                                                    "side_effect": fake_read}},
+        )
+        self.assertEqual(sorted(calls), sorted(["999", "edit:999", "status:999", "delete:999"]))
+        self.assertEqual(self._sent(mocks["telegram_client.TelegramClient.send_message"]),
+                         ["answer"])
 
 
 if __name__ == "__main__":

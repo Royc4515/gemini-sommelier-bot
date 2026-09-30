@@ -7,8 +7,10 @@ Lightweight Telegram Bot API wrapper using only ``urllib.request``.
 import json
 import os
 import re
+import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 
 import timing
 
@@ -199,6 +201,34 @@ class TelegramClient:
                     return json.loads(response.read().decode("utf-8"))
         except Exception:
             return {}
+
+    @contextmanager
+    def keep_typing(self, chat_id: int | str, every: float = 4.0):
+        """Show "typing…" for as long as the block runs (spec 007 AC 5).
+
+        Telegram clears the indicator after about 5 s, so a single call before a
+        25 s wait looks like a dead bot; this refreshes it every *every* seconds
+        on a background thread, so the block's own work is never delayed. Exit
+        the block BEFORE sending the reply: a refresh landing after the message
+        would show a phantom "typing…" under it.
+        """
+        stop = threading.Event()
+
+        def _refresh():
+            while True:
+                self.send_chat_action(chat_id, "typing")
+                if stop.wait(every):
+                    return
+
+        thread = threading.Thread(target=_refresh, name="keep-typing", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            # Let a refresh already in flight land before the caller's reply does
+            # (each call is short; this bound only covers a stuck socket).
+            thread.join(timeout=1.0)
 
     def set_my_commands(self, commands: list[dict]) -> dict:
         """Register the bot's '/' command menu. *commands* is a list of

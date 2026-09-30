@@ -265,6 +265,12 @@ class AddWine:
     def _disable_buttons(self, chat_id: str, message_id) -> None:
         disable_buttons(self.telegram, chat_id, message_id)
 
+    @staticmethod
+    def state_key(chat_id: str) -> str:
+        # don't touch / addwine predates the namespaced keys; its live state rows
+        # are keyed by the bare chat id.
+        return chat_id
+
 
 # ======================================================================
 # Record building / rendering (pure functions, easy to unit test)

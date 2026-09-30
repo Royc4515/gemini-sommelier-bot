@@ -15,11 +15,16 @@ everything wine-related from THIS module so the flows depend on one stable name:
     Re-exported below.
 """
 
+import contextvars
+import copy
 import os
 import sys
+import threading
 import time
+from contextlib import contextmanager
 
 from apps_script_client import AppsScriptClient
+import timing
 
 # Re-exported so callers keep importing the column model + fill parser from
 # `cellar` (one wine-layer entry point); see each module for the real home.
@@ -44,6 +49,64 @@ SHEET_LINK = f"https://docs.google.com/spreadsheets/d/{CELLAR_FILE_ID}"
 
 
 # ======================================================================
+# Request-scoped flow-state cache (spec 007 AC 3, 9)
+# ======================================================================
+
+class _StateCache:
+    """Flow states already read (or written) during this request, by key.
+
+    Shared by the request's worker threads, so locked. Values are deep-copied in
+    and out: a flow that mutates the dict it got back must not change what the
+    next reader sees unless it writes it through set_state.
+    """
+
+    def __init__(self):
+        self._values: dict[str, dict | None] = {}
+        self._lock = threading.Lock()
+
+    def lookup(self, key: str) -> tuple[bool, dict | None]:
+        with self._lock:
+            if key not in self._values:
+                return False, None
+            return True, copy.deepcopy(self._values[key])
+
+    def store(self, key: str, value: dict | None) -> None:
+        with self._lock:
+            self._values[key] = copy.deepcopy(value)
+
+
+_state_cache: contextvars.ContextVar = contextvars.ContextVar("cellar_state_cache", default=None)
+
+
+@contextmanager
+def request_state_cache():
+    """Cache flow-state reads for one request; everything is dropped on exit (AC 9)."""
+    token = _state_cache.set(_StateCache())
+    try:
+        yield
+    finally:
+        _state_cache.reset(token)
+
+
+def _remember(key: str, value: dict | None) -> None:
+    """Write-through: keep the request cache equal to what was just written."""
+    cache = _state_cache.get()
+    if cache is not None:
+        cache.store(key, value)
+
+
+def prefetch_states(pool, keys: list[str]) -> list:
+    """Read every flow-state *key* at once into the request cache (AC 3).
+
+    Returns the futures so the caller can wait for them. Each read degrades on
+    its own (get_state returns None on failure, AC 8), so one slow or failing
+    key never blocks or breaks the others.
+    """
+    backend = CellarBackend()
+    return [timing.run_in(pool, backend.get_state, key) for key in keys]
+
+
+# ======================================================================
 # State + cellar persistence (over the shared Apps Script transport)
 # ======================================================================
 
@@ -56,7 +119,9 @@ class CellarBackend:
     """
 
     TTL_SEC = 1800  # 30 min: abandon stale half-finished flows.
-    _TIMEOUT = 8    # generous: extraction-free, but Apps Script can be slow.
+    # don't touch / 8 s was measured too tight (spec 007): single reads took up
+    # to ~10 s, and a timed-out state read silently reads as "no active flow".
+    _TIMEOUT = 15
 
     def __init__(self):
         self._api = AppsScriptClient(timeout=self._TIMEOUT)
@@ -66,7 +131,23 @@ class CellarBackend:
         return self._api.configured
 
     def get_state(self, chat_id: str) -> dict | None:
-        """Return the live state dict, or None if absent/expired."""
+        """Return the live state dict, or None if absent/expired.
+
+        Within a request_state_cache() a key is read from Apps Script at most
+        once; later reads (and the flows' own checks after a prefetch) are
+        answered from the cache, which set_state / clear_state keep current.
+        """
+        cache = _state_cache.get()
+        if cache is not None:
+            hit, value = cache.lookup(chat_id)
+            if hit:
+                return value
+        value = self._read_state(chat_id)
+        if cache is not None:
+            cache.store(chat_id, value)
+        return value
+
+    def _read_state(self, chat_id: str) -> dict | None:
         if not self._api.configured:
             return None
         try:
@@ -86,10 +167,12 @@ class CellarBackend:
     def set_state(self, chat_id: str, state: dict) -> None:
         self._api.post_json({"action": "addwine_state", "chat_id": chat_id,
                              "state": state, "updated_at": time.time()})
+        _remember(chat_id, state)
 
     def clear_state(self, chat_id: str) -> None:
         # state=null tells the Apps Script to delete the row.
         self._api.post_json({"action": "addwine_state", "chat_id": chat_id, "state": None})
+        _remember(chat_id, None)
 
     def append_rows(self, rows: list[list], status: str = "Closed") -> dict:
         """Append wine rows (A-N) to the cellar. Raises on failure.
