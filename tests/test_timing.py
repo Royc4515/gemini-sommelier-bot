@@ -110,6 +110,28 @@ class TimerTests(unittest.TestCase):
         with timing.stage(name):
             pass
 
+    def test_mark_records_time_since_start(self):
+        import time
+
+        def work():
+            time.sleep(0.05)
+            timing.mark("reply_at")
+        line = _run(work)
+        self.assertRegex(line, _LINE)
+        at = float(line.split("reply_at=")[1].split()[0])
+        self.assertGreaterEqual(at, 0.05)
+
+    def test_request_pool_does_not_wait_for_abandoned_work(self):
+        # A dropped draft must not hold the webhook's response (spec 007).
+        import threading
+        import time
+        release = threading.Event()
+        t0 = time.perf_counter()
+        with timing.request_pool() as pool:
+            pool.submit(release.wait, 5)
+        self.assertLess(time.perf_counter() - t0, 1.0)
+        release.set()
+
 
 class ChokePointTests(unittest.TestCase):
     def test_apps_script_get_and_post_named_by_action(self):

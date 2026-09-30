@@ -1,6 +1,7 @@
 # Plan — Feature 007 Faster replies
 
-**Status:** approved (self-reviewed 2026-09-28; owner delegated the decisions)
+**Status:** approved (self-reviewed 2026-09-28; owner delegated the decisions);
+implementation notes for phase 2 added 2026-09-30
 **Spec:** ./spec.md
 
 ## Approach
@@ -17,23 +18,42 @@ exist, so no flow logic changes:
 (every model attempt, named by task + model), and the `TelegramClient` calls.
 Nothing else changes; the owner then sends 5+ plain questions and a few taps.
 
-**Phase 2: optimize (AC 3-10).** One request-scoped `ThreadPoolExecutor` (stdlib),
-used in three places:
+**Phase 2: optimize (AC 3-12).** One request-scoped `ThreadPoolExecutor` (stdlib,
+`timing.request_pool()`), used in three places:
 1. *Flow states.* Before offering a message to the flows, the webhook prefetches
-   the four state keys (`<id>`, `edit:<id>`, `status:<id>`, `delete:<id>`) at
-   once into a request-scoped cache; `CellarBackend.get_state` reads the cache
-   first, and `set_state` / `clear_state` write through to it. The flows are
-   untouched and still work without a prefetch (§6).
-2. *Chat context.* When no flow claims free text, the webhook starts the cellar
-   list, memory read and CSV together.
-3. *Speculative answer.* As soon as the cellar list is in, `parse_request`
-   starts; as soon as memory + CSV are in, the chat answer starts. Both run
-   together. The orchestrator's decision is split out so the webhook can act on
-   the parsed request: chat → send the drafted answer; action → the orchestrator
-   acts as today and the draft is dropped after a bounded wait.
+   the four state keys (each flow's public `state_key(chat_id)`: `<id>`,
+   `edit:<id>`, `status:<id>`, `delete:<id>`) at once into a request-scoped cache;
+   `CellarBackend.get_state` reads the cache first, and `set_state` /
+   `clear_state` write through to it. The flows are untouched and still work
+   without a prefetch (§6).
+2. *Chat context.* For a plain question (text that isn't a `/command`) the cellar
+   list, memory read and CSV start **at the same moment as the state reads**, not
+   after the flows decline (implementation: this overlaps them with the state
+   reads too; a flow that claims the message simply leaves them unused).
+3. *Speculative answer.* Once the flows and commands decline, the intent parse
+   (waiting on the cellar list) and the chat answer (waiting on memory + CSV) are
+   queued together. `Orchestrator.decide` / `act` are split out so the webhook can
+   act on the parsed request: chat or any orchestrator failure → send the drafted
+   answer; action → the orchestrator acts and the draft is dropped.
 
-The reply is sent before `save_turn` (AC 4), and a `keep_typing` context manager
-re-sends "typing" every 4 s on a daemon thread until the reply goes out (AC 5).
+**Implementation note (2026-09-30, diverges from the first plan):** a dropped
+draft is **abandoned, not awaited**. The pool shuts down with `wait=False,
+cancel_futures=True`: holding the request for a discarded ~18 s model call after
+the confirm message would delay Telegram's delivery of the user's next update
+(usually the confirm tap). Abandoning is safe because a draft only reads and
+calls the model; it never sends or writes (`ChatDraft` in `chat_flow.py`).
+
+The reply is sent before `save_turn` (AC 4), and `TelegramClient.keep_typing`
+re-sends "typing" every 4 s on a daemon thread while reads and model calls are in
+flight, stopping before any message is sent (AC 5). The TIMING line gains a
+`reply_at=<s>` mark (time since request start when the answer was sent), because
+overlapping stages make `total` no longer mean "when the user saw it" (AC 6).
+
+**AC 11-12 (added after the phase 1 measurement):** `ChatMemory` read timeout
+5 → 15 s, `CellarBackend` timeout 8 → 15 s, `vercel.json` `maxDuration` 60 →
+120 s. With reads overlapped, a longer timeout costs time only when that read is
+itself the slowest, and then waiting is correct (a failed read loses history or
+misroutes a flow message).
 No Apps Script change → **no redeploy**.
 
 ## Files touched
@@ -45,9 +65,13 @@ No Apps Script change → **no redeploy**.
 | `wine_inventory.py` | 1 | Wrap `fetch_inventory` in `timing.stage("csv")`. |
 | `sommelier_ai.py` | 1 | `_call_with_retry(..., label=)`; each attempt timed as `gemini:<label>:<model>`. Callers pass `chat`, `parse`, `extract`, `photo`, `transcribe`, `summarize`. |
 | `telegram_client.py` | 1, 2 | 1: stages `tg:send`, `tg:typing`, `tg:answer_cb`, `tg:edit_kb`, `tg:file`, `tg:download`. 2: `keep_typing(chat_id)` context manager. |
-| `cellar.py` | 2 | Request-scoped state cache (`contextvars`): `prefetch_states(keys)`, cache-first `get_state`, write-through `set_state` / `clear_state`. |
+| `cellar.py` | 2 | Request-scoped state cache (`contextvars`): `request_state_cache()`, `prefetch_states(pool, keys)`, cache-first `get_state`, write-through `set_state` / `clear_state`; timeout 8 → 15 s (AC 11). |
 | `orchestrator.py` | 2 | Split `maybe_handle` into `decide(text, wines)` → request and `act(chat_id, req, text, wines)` → bool; `maybe_handle` stays as the wrapper (§6). |
-| `chat_flow.py` | 2 | `answer_chat` gains optional prefetched `history` / `summary` / `inventory_text` / `answer`; sends before `save_turn`; wraps the wait in `keep_typing`. |
+| `chat_flow.py` | 2 | `ChatDraft`: reads start on construction, `start(text)` queues the model call, `deliver()` sends before `save_turn` inside `keep_typing`. `answer_chat` (the "רק שאלה" button) runs the same draft. |
+| `chat_memory.py` | 2 | Read timeout 5 → 15 s (AC 11). |
+| `addwine.py` `editwine.py` `statuswine.py` `deletewine.py` | 2 | Public `state_key(chat_id)` (was private `_key`; AddWine gains one) so the webhook prefetches exactly the keys the flows read. |
+| `timing.py` | 2 | `request_pool()` and the `reply_at` mark. |
+| `vercel.json` | 2 | `maxDuration` 60 → 120 (AC 12). |
 | `tests/test_timing.py` | 1 | **New.** Line format, no content leakage, `finish()` on every route, nested and concurrent stages. |
 | `tests/test_webhook.py` | 1, 2 | 1: one `TIMING` line per request, including early returns. 2: concurrency, speculative discard, reply-before-save. |
 | `tests/test_cellar_prefetch.py` | 2 | **New.** Cache hits, write-through, a failing key degrades to `None`, cache gone after the request. |
@@ -75,7 +99,9 @@ No Apps Script change → **no redeploy**.
 7. Routing order in `api/index.py` unchanged; the flows' and orchestrator's code paths unchanged apart from the `decide`/`act` split; suite green.
 8. Each prefetch runs the same per-call `try/except` defaults as today; one future's exception never cancels the others.
 9. The state cache and executor live in `contextvars` / locals set at request start and reset in `finally`.
-10. `decide` → action: `act` runs, the draft future is awaited (bounded) and dropped, never sent or saved. `decide` → chat: the draft is the reply.
+10. `decide` → action: `act` runs and the draft is dropped (not awaited), never sent or saved. `decide` → chat, or a parse / `act` failure: the draft is the reply.
+11. `ChatMemory` and `CellarBackend` timeouts 15 s, above the ~7-10 s reads measured live; pinned by `tests/test_cellar_prefetch.py`.
+12. `vercel.json` `maxDuration` 120 (Hobby + Fluid compute allows 300); the Vercel preview build validates the value before merge.
 
 ## Risks & mitigations
 - **Threads and `contextvars`.** A `Context` can't be entered by two threads at
@@ -83,13 +109,15 @@ No Apps Script change → **no redeploy**.
   timer and the state cache are shared mutable objects guarded by a lock.
 - **Apps Script concurrency.** Only reads run concurrently (at most 6); writes stay
   sequential. Apps Script allows about 30 simultaneous executions per user.
-- **Speculative draft outliving the request.** After an action the webhook waits
-  for the draft (up to 20 s, after the confirm message is already sent, so the
-  user doesn't feel it); anything still running is abandoned with no side effect,
-  because `ask` has none.
-- **Session-expiry summary now also runs on action messages** (memory is
-  prefetched before the intent is known). This is harmless: the same summary would
-  run on the next chat message anyway.
+- **Speculative draft outliving the request.** After an action the draft is not
+  awaited (see the implementation note above); anything still running finishes
+  or is dropped with no side effect, because the draft never sends or writes.
+- **Session-expiry summary now also runs on action and in-flow messages** (memory
+  is prefetched before the route is known). This is harmless: the same summary
+  would run on the next chat message anyway.
+- **Extra reads for in-flow text.** A plain-text message inside a flow (a fill
+  line) also starts the cellar list, memory and CSV reads, then leaves them
+  unused. They are reads only; the cost is Apps Script load, not user time.
 - **Log noise.** One line per request, info level (stdout), so error-level
   queries stay clean.
 - **Stale state from the cache.** The cache lives inside one request, and every
@@ -111,8 +139,10 @@ before this plan; the measured baseline is written into the spec.
   no message text in the line (property check with a unique marker string).
 - **Phase 1 live:** merge → owner sends 5 plain questions, 1 voice note, 1 photo,
   and 3 flow taps → read the `TIMING` lines → baseline table into the spec.
-- **Phase 2 unit:** fakes that sleep 0.2 s prove overlap (wall < sum); a raising
-  prefetch degrades while the others succeed; action intent → draft never sent
-  or saved; chat intent → sent before `save_turn`; the keep-typing thread stops;
-  the cache is empty after the request.
+- **Phase 2 unit:** fakes that sleep 0.3 s prove overlap (wall < sum: 0.6 s for
+  work that takes 2.7 s in series); a raising prefetch degrades while the others
+  succeed; action intent → draft never sent or saved; chat intent → sent before
+  `save_turn`; parse or `act` failure → the draft is the reply; a flow-claimed
+  message makes no model call; the keep-typing thread stops; the cache is empty
+  after the request; the timeouts cover the measured latency.
 - **Phase 2 live:** the same questions and taps again → after table → AC 6 verdict.

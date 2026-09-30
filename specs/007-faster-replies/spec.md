@@ -1,6 +1,7 @@
 # Feature 007 — Faster replies (cut serial round trips)
 
-**Status:** approved (owner delegated the open decisions to Claude, 2026-09-28)
+**Status:** approved (owner delegated the open decisions to Claude, 2026-09-28);
+amended 2026-09-30 with the phase 1 measurement and AC 11-12 (owner-approved)
 **Author/date:** Claude / 2026-09-28
 
 ## Why
@@ -24,6 +25,37 @@ moment (Apps Script cold start, a model retry) from dropping a reply entirely.
 Today's serial path for a plain chat message: 4 flow-state reads → cellar list →
 intent parse (model) → memory read → cellar CSV → answer (model) → memory write →
 **reply sent**.
+
+### Phase 1 measurement (AC 2, production `805de3d`, 2026-09-30 15:03-15:08 UTC)
+The owner ran the live test; 5 requests reached the server (seconds):
+
+| # | Input | Result | Total | Where the time went (serial) |
+|---|---|---|---|---|
+| 1 | text | 504, cut at 60 s | - | no TIMING line (killed) |
+| 2 | text | 200, chat | 54.3 | 4 state reads 7.7 · cellar list 3.1 · intent parse 13.8 · memory read 7.3 **(failed)** · CSV 0.3 · answer 18.0 · memory write 3.3 · send 0.4 |
+| 3 | photo | 200, photo | 25.6 | 4 state reads 19.0 (addwine read **failed** at 9.9) · download 0.8 · photo model 4.8 · send 0.4 |
+| 4 | text | 504, cut at 60 s | - | cellar list timed out (8 s) |
+| 5 | voice | 200, chat | 50.4 | transcribe 6.2 · 4 state reads 14.1 · cellar list 2.2 · parse 12.7 · memory read 6.9 **(failed)** · CSV 0.3 · answer 1.2 · memory write 4.7 |
+
+Only one plain chat question completed (54.3 s), not the 5 AC 2 asks for. That is
+accepted: the breakdown is unambiguous, and the findings below are bugs, not noise.
+(Fluid compute ran overlapping requests on one instance, so which Vercel request a
+line is attributed to is approximate; the stage numbers themselves are exact.)
+
+**Findings**
+1. **The bot had no conversation memory.** The memory read's 5 s timeout was below
+   Apps Script's ~7 s, so every read failed and the answer used empty history,
+   while the memory write (after it) still succeeded.
+2. **2 of 5 requests were cut at the 60 s `maxDuration`** (set in PR #16). Vercel
+   Hobby with Fluid compute allows up to 300 s.
+3. **Apps Script round trips took 1.6-10 s each**, all in series: about 21 s of the
+   54 s chat. The two model calls (about 32 s) also ran in series.
+4. **A flow-state read hit the 8 s cellar timeout.** A failed state read means "no
+   active flow", so a message inside /addwine could be routed as a plain question.
+
+Expected after phase 2 on these numbers: reads overlap (about 7-10 s), then the
+intent parse and the answer overlap (about 18 s), so the reply lands at about
+26-28 s instead of 54 s.
 
 ## User stories
 - As the owner, when I ask a question, the answer arrives noticeably sooner.
@@ -54,8 +86,9 @@ intent parse (model) → memory read → cellar CSV → answer (model) → memor
    the indicator is refreshed so it never lapses (Telegram clears it after about
    5 s). It stops once the reply is out or the request fails.
 6. **Target.** Over at least 5 live plain chat questions, the median time until
-   the reply appears is **at least 40% lower** than the AC 2 baseline. No live
-   test request (chat, voice, photo, flow steps, taps) exceeds 45 s.
+   the reply appears is **at least 40% lower** than the AC 2 baseline, i.e. at
+   most **32 s** against the measured 54.3 s (the `reply_at` mark in the TIMING
+   line). No live test request (chat, voice, photo, flow steps, taps) exceeds 45 s.
 7. **Behavior unchanged.** Same routing priority (active flows → bare photo →
    commands → orchestrator → chat), same replies, same sheet writes, same
    `/cancel` and identity-guard semantics. The existing suite passes unchanged
@@ -72,6 +105,12 @@ intent parse (model) → memory read → cellar CSV → answer (model) → memor
     discarded: never sent, never written to memory. A plain chat message makes
     no more model calls than today (intent + answer); only an action message
     costs one extra, discarded call.
+11. **Reads survive measured latency** (added 2026-09-30, findings 1 and 4). The
+    memory read no longer times out at the latency measured live, so answers use
+    the conversation history again; the cellar/flow-state timeout likewise covers
+    the slowest read measured.
+12. **No silent cut-off** (added 2026-09-30, finding 2). The function's time limit
+    leaves room for a slow day instead of killing a reply at 60 s.
 
 ## Non-goals (explicitly out of scope)
 - **Apps Script changes** (a batched "all states" endpoint, LockService, faster
@@ -80,6 +119,11 @@ intent parse (model) → memory read → cellar CSV → answer (model) → memor
 - **Model or prompt changes** (thinking level, a different primary model).
   Decided from AC 1 data in a separate change.
 - Streaming or partial replies; caching across requests; webhook retries.
+
+## Scope change (owner-approved, 2026-09-30)
+After the phase 1 measurement the owner approved phase 2 "including the memory
+fix". AC 11 and AC 12 were added for findings 1, 2 and 4: they change timeouts
+and the Vercel limit only, no Apps Script code (still a non-goal).
 
 ## Decisions (owner delegated both open questions, 2026-09-28)
 1. **Speculative answer: yes (AC 10).** The draft's cost is lower than first

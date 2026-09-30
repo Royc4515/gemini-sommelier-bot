@@ -125,7 +125,7 @@ class EditWine:
             self._start(chat_id)
             return True
 
-        state = self.backend.get_state(self._key(chat_id))
+        state = self.backend.get_state(self.state_key(chat_id))
         if state is None or state.get("flow") != _FLOW:
             return False  # not in an edit flow -> let other handlers run.
 
@@ -163,7 +163,7 @@ class EditWine:
         message_id = msg.get("message_id")
         self.telegram.answer_callback_query(cq_id)
 
-        state = self.backend.get_state(self._key(chat_id))
+        state = self.backend.get_state(self.state_key(chat_id))
         if data == "editwine:cancel":
             self._clear(chat_id)
             self._disable_buttons(chat_id, message_id)
@@ -209,7 +209,7 @@ class EditWine:
             if w.get("row")
         ]
         shown = list(range(len(entries)))
-        self.backend.set_state(self._key(chat_id), {
+        self.backend.set_state(self.state_key(chat_id), {
             "state": _AWAIT_SELECT, "flow": _FLOW, "wines": entries, "shown": shown,
         })
         self.telegram.send_message(
@@ -232,7 +232,7 @@ class EditWine:
             )
         elif kind == "filter":
             state["shown"] = payload
-            self.backend.set_state(self._key(chat_id), state)
+            self.backend.set_state(self.state_key(chat_id), state)
             self.telegram.send_message(
                 chat_id, _render_list(entries, payload),
                 reply_markup=_list_keyboard(entries, payload),
@@ -260,7 +260,7 @@ class EditWine:
         """Move a chosen wine into the EDIT stage and show its fields."""
         rec = entry["rec"]
         token = uuid.uuid4().hex
-        self.backend.set_state(self._key(chat_id), {
+        self.backend.set_state(self.state_key(chat_id), {
             "state": _EDIT, "flow": _FLOW,
             "row": entry["row"], "status": entry["status"], "rec": rec,
             # Original identity guards against editing the wrong row if the
@@ -278,7 +278,7 @@ class EditWine:
         records = [state["rec"]]
         apply_fill(records, text, _EDIT_LABELS)
         state["rec"] = records[0]
-        self.backend.set_state(self._key(chat_id), state)
+        self.backend.set_state(self.state_key(chat_id), state)
         self.telegram.send_message(
             chat_id, _render_edit(state["rec"], state.get("status", "")),
             reply_markup=_confirm_keyboard(state["token"]),
@@ -323,12 +323,12 @@ class EditWine:
     # ---- helpers ----------------------------------------------------------
 
     @staticmethod
-    def _key(chat_id: str) -> str:
+    def state_key(chat_id: str) -> str:
         # Namespaced so editwine state never collides with the addwine row.
         return f"edit:{chat_id}"
 
     def _clear(self, chat_id: str) -> None:
-        self.backend.clear_state(self._key(chat_id))
+        self.backend.clear_state(self.state_key(chat_id))
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
         disable_buttons(self.telegram, chat_id, message_id)

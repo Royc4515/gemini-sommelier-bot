@@ -61,7 +61,7 @@ class DeleteWine:
             self._start(chat_id)
             return True
 
-        state = self.backend.get_state(self._key(chat_id))
+        state = self.backend.get_state(self.state_key(chat_id))
         if state is None or state.get("flow") != _FLOW:
             return False
 
@@ -96,7 +96,7 @@ class DeleteWine:
         message_id = msg.get("message_id")
         self.telegram.answer_callback_query(cq_id)
 
-        state = self.backend.get_state(self._key(chat_id))
+        state = self.backend.get_state(self.state_key(chat_id))
         if data == "delete:cancel":
             self._clear(chat_id)
             self._disable_buttons(chat_id, message_id)
@@ -131,7 +131,7 @@ class DeleteWine:
 
         entries = lightweight_entries(wines)
         shown = list(range(len(entries)))
-        self.backend.set_state(self._key(chat_id), {
+        self.backend.set_state(self.state_key(chat_id), {
             "state": _AWAIT_SELECT, "flow": _FLOW, "wines": entries, "shown": shown,
         })
         self.telegram.send_message(
@@ -152,7 +152,7 @@ class DeleteWine:
             )
         elif kind == "filter":
             state["shown"] = payload
-            self.backend.set_state(self._key(chat_id), state)
+            self.backend.set_state(self.state_key(chat_id), state)
             self.telegram.send_message(
                 chat_id, _render_list(entries, payload),
                 reply_markup=_list_keyboard(entries, payload),
@@ -177,7 +177,7 @@ class DeleteWine:
     def _enter_confirm(self, chat_id: str, entry: dict) -> None:
         token = uuid.uuid4().hex
         name = entry_name(entry)
-        self.backend.set_state(self._key(chat_id), {
+        self.backend.set_state(self.state_key(chat_id), {
             "state": _CONFIRM, "flow": _FLOW,
             "row": entry["row"], "name": name,
             "orig_winery": entry.get("winery", ""),
@@ -225,11 +225,11 @@ class DeleteWine:
     # ---- helpers ----------------------------------------------------------
 
     @staticmethod
-    def _key(chat_id: str) -> str:
+    def state_key(chat_id: str) -> str:
         return f"delete:{chat_id}"
 
     def _clear(self, chat_id: str) -> None:
-        self.backend.clear_state(self._key(chat_id))
+        self.backend.clear_state(self.state_key(chat_id))
 
     def _disable_buttons(self, chat_id: str, message_id) -> None:
         disable_buttons(self.telegram, chat_id, message_id)

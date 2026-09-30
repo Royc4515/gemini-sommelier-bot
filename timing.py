@@ -16,6 +16,7 @@ text, names, chat ids, URLs or secrets (spec 007 AC 1). Outside a request
 import contextvars
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 _current: contextvars.ContextVar = contextvars.ContextVar("request_timer", default=None)
@@ -34,6 +35,9 @@ class _RequestTimer:
     def add(self, name: str, seconds: float) -> None:
         with self._lock:
             self._stages.append((name, seconds))
+
+    def elapsed(self) -> float:
+        return time.perf_counter() - self.started
 
     def line(self) -> str:
         total = time.perf_counter() - self.started
@@ -79,6 +83,17 @@ def stage(name: str):
     timer.add(name, time.perf_counter() - t0)
 
 
+def mark(name: str) -> None:
+    """Record *name* at the time since the request started, not a duration.
+
+    Stages overlap once reads run concurrently, so ``total`` no longer says when
+    the user saw the reply; ``reply_at`` does (spec 007 AC 6).
+    """
+    timer = _current.get()
+    if timer is not None:
+        timer.add(name, timer.elapsed())
+
+
 def finish(token: contextvars.Token | None = None) -> None:
     """Print this request's TIMING line and close the timer. Never raises."""
     try:
@@ -105,3 +120,19 @@ def run_in(executor, fn, *args, **kwargs):
     """
     ctx = contextvars.copy_context()
     return executor.submit(ctx.run, fn, *args, **kwargs)
+
+
+@contextmanager
+def request_pool(max_workers: int = 8):
+    """A thread pool for one request's concurrent I/O (spec 007 phase 2).
+
+    On exit, queued tasks are cancelled and running ones are left to finish on
+    their own instead of being awaited: they are reads and model calls whose
+    results are simply dropped (a discarded draft, a read a flow didn't need), so
+    making Telegram wait for them would only delay this chat's next update.
+    """
+    pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="req")
+    try:
+        yield pool
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)

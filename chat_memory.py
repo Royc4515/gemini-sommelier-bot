@@ -37,8 +37,10 @@ class ChatMemory:
 
     def __init__(self):
         # Same Apps Script deployment + secret the cellar talks to (one auth
-        # path). A memory read is quick, so a tighter timeout than cellar writes.
-        self._api = AppsScriptClient(timeout=5)
+        # path). don't touch / the old 5 s timeout failed EVERY read live (spec
+        # 007: reads took ~7 s), silently answering with no history while the
+        # write still succeeded.
+        self._api = AppsScriptClient(timeout=15)
 
     # ------------------------------------------------------------------
     # Public API

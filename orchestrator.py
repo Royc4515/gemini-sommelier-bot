@@ -63,11 +63,27 @@ class Orchestrator:
         except Exception:
             wines = []
         try:
-            req = self.ai.parse_request(text, wines)
+            req = self.decide(text, wines)
         except Exception as exc:
             sys.stderr.write(f"ERROR: orchestrator parse failed: {exc}\n")
             return False
+        return self.act(chat_id, req, text, wines)
 
+    def decide(self, text: str, wines: list) -> dict:
+        """Parse *text* into a request ({intent, wine_row, status, details}).
+
+        Split from act() so the webhook can run the parse alongside the chat
+        draft (spec 007 AC 10). Raises on a model failure; callers treat that as
+        chat, as maybe_handle does.
+        """
+        return self.ai.parse_request(text, wines)
+
+    def act(self, chat_id: str, req: dict, text: str, wines: list) -> bool:
+        """Carry out a parsed request. True if consumed, False for chat.
+
+        A chat intent returns False with no side effects, so the caller can send
+        its answer instead.
+        """
         intent = req.get("intent", "chat")
         if intent not in _FLOW:
             return False  # chat -> normal sommelier answer.

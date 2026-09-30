@@ -17,11 +17,11 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 
 ## Commands
 - Install: `pip install -r requirements.txt` (verified, in a venv).
-- Unit tests: `python -m unittest discover -s tests` (verified: 198 tests OK, run on Python 3.11 locally; CI uses 3.12).
+- Unit tests: `python -m unittest discover -s tests` (verified: 231 tests OK, run on Python 3.11 locally; CI uses 3.12).
 - Smoke: `python selftest_overhaul.py` (verified: 21 passed). CI runs both on push/PR to `main` (`.github/workflows/tests.yml`).
 - Live Apps Script contract check: `SHEETS_MEMORY_URL=... SHEETS_SECRET=... python smoke_editwine.py [--write-test]` (unverified; hits the real sheet).
 - Register the `/` menu after changing commands: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified).
-- Deploy: Vercel from the repo (`vercel.json`, route `/api/webhook` -> `api/index.py`, `maxDuration` 60). No build step.
+- Deploy: Vercel from the repo (`vercel.json`, route `/api/webhook` -> `api/index.py`, `maxDuration` 120; Hobby + Fluid compute allows up to 300). No build step.
 - Env vars: see README "Environment Variables". Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `GEMINI_API_KEY`, `WINE_CSV_URL`.
 
 ## Conventions (Roy's standing rules)
@@ -43,7 +43,7 @@ Failure behavior (`_call_with_retry`, `_is_transient`):
 Changing the order, codes, retry counts or error classification requires a test in `tests/test_sommelier_ai.py` or a manual verification note in the PR (which model codes were live-checked and how). A wrong model code 404s and silently burns a hop; `test_fallback_models_are_current_api_codes` pins the primary.
 
 ## Gotchas
-- Latency budget: worst case per chain is 4 models x 3 attempts plus 3s of sleep per model, and a free-text message can run two chains (orchestrator `parse_request`, then `ask`). Keep this under Vercel `maxDuration` 60 when adding retries or models.
+- Latency budget: worst case per chain is 4 models x 3 attempts plus 3s of sleep per model, and a free-text message runs two chains at once (orchestrator `parse_request` alongside the drafted `ask`, spec 007), after reads bounded by the 15 s Apps Script timeout. Keep the sum under Vercel `maxDuration` 120 when adding retries or models; the TIMING log line (`timing.py`) shows where a slow request spent its time.
 - Never write sheet columns O/P/Q; the status column is found by header name (`סטטוס חדש`), not position (`README.md`, constitution §3).
 - Edit/status/delete use a shifted-row identity guard (original `יקב`/`שם היין`); keep it on any new write path.
 - `apps_script.js` changes do nothing until pasted into the bound script and the EXISTING Web App version is redeployed (keeps the URL).
