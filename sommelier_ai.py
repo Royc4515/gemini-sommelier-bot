@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
+import timing
+
 from sommelier_prompts import (
     BASE_SYSTEM_INSTRUCTION as _BASE_SYSTEM_INSTRUCTION,
     EXTRACTION_PROMPT as _EXTRACTION_PROMPT,
@@ -130,7 +132,8 @@ class SommelierAI:
         )
 
         return self._call_with_retry(
-            lambda model_name: self._chat_send(model_name, system_instruction, gemini_history, current_message)
+            lambda model_name: self._chat_send(model_name, system_instruction, gemini_history, current_message),
+            label="chat",
         )
 
     # ------------------------------------------------------------------
@@ -141,7 +144,8 @@ class SommelierAI:
         """Single-turn summarization call."""
         contents = f"{prompt}{text}"
         return self._call_with_retry(
-            lambda model_name: self._single_generate(model_name, contents)
+            lambda model_name: self._single_generate(model_name, contents),
+            label="summarize",
         )
 
     def parse_request(self, text: str, wines: list[dict] | None = None) -> dict:
@@ -161,7 +165,8 @@ class SommelierAI:
         ]
         try:
             raw = self._call_with_retry(
-                lambda model_name: self._generate_json(model_name, contents)
+                lambda model_name: self._generate_json(model_name, contents),
+                label="parse",
             )
         except Exception as exc:
             sys.stderr.write(f"ERROR: parse_request failed: {exc}\n")
@@ -218,6 +223,7 @@ class SommelierAI:
         raw = self._call_with_retry(
             lambda model_name: self._single_generate_multimodal(model_name, contents),
             models=audio_models,
+            label="transcribe",
         )
         return (raw or "").strip()
 
@@ -261,12 +267,14 @@ class SommelierAI:
         return self._call_with_retry(
             lambda model_name: self._single_generate_multimodal(model_name, contents),
             models=image_models,
+            label="photo",
         )
 
     def _extract(self, contents: list) -> list[dict]:
         """Run extraction through the fallback chain and parse defensively."""
         raw = self._call_with_retry(
-            lambda model_name: self._generate_json(model_name, contents)
+            lambda model_name: self._generate_json(model_name, contents),
+            label="extract",
         )
         return _parse_wine_json(raw)
 
@@ -320,7 +328,7 @@ class SommelierAI:
         )
         return response.text or ""
 
-    def _call_with_retry(self, fn, models=None) -> str:
+    def _call_with_retry(self, fn, models=None, label: str = "gemini") -> str:
         """Execute *fn(model_name)* down the fallback chain.
 
         Per model: a transient server error (500/503/504, "overloaded") is
@@ -330,13 +338,15 @@ class SommelierAI:
         when every model has failed does this raise (constitution §5).
 
         *models* lets a caller restrict the fallback chain (e.g. transcription
-        passes only audio-capable models); defaults to the full chain.
+        passes only audio-capable models); defaults to the full chain. *label*
+        names the task in the per-request timing line (spec 007).
         """
         last_error = None
         for model_name in (models or self.FALLBACK_MODELS):
             for attempt in range(self._MAX_RETRIES):
                 try:
-                    return fn(model_name)
+                    with timing.stage(f"gemini:{label}:{model_name}"):
+                        return fn(model_name)
                 except Exception as exc:
                     last_error = exc
                     if self._is_transient(exc) and attempt < self._MAX_RETRIES - 1:

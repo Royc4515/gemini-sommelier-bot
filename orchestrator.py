@@ -30,6 +30,7 @@ from editwine import EditWine
 from sommelier_ai import SommelierAI
 from statuswine import StatusWine
 from telegram_client import TelegramClient
+import timing
 
 
 # intent -> (command that starts the flow, flow class).
@@ -70,6 +71,7 @@ class Orchestrator:
         intent = req.get("intent", "chat")
         if intent not in _FLOW:
             return False  # chat -> normal sommelier answer.
+        timing.set_route(f"orch:{intent}")
 
         if intent == "add_wine":
             return self._do_add(chat_id, req, text)

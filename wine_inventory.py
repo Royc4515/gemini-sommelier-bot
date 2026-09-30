@@ -10,6 +10,8 @@ import io
 import os
 import urllib.request
 
+import timing
+
 
 class WineInventory:
     """Handles fetching, parsing, and formatting the wine inventory."""
@@ -29,8 +31,9 @@ class WineInventory:
         Raises ``urllib.error.URLError`` on network failures.
         """
         request = urllib.request.Request(self.csv_url)
-        with urllib.request.urlopen(request, timeout=self.FETCH_TIMEOUT_SECONDS) as response:
-            raw_bytes: bytes = response.read()
+        with timing.stage("csv"):
+            with urllib.request.urlopen(request, timeout=self.FETCH_TIMEOUT_SECONDS) as response:
+                raw_bytes: bytes = response.read()
         return raw_bytes.decode("utf-8-sig")
 
     # ------------------------------------------------------------------

@@ -359,5 +359,62 @@ class TestWebhookStaleButtonsAndCancel(unittest.TestCase):
         self.assertIn("בוטל", mock_send.call_args[1]["text"])
 
 
+class TestWebhookTimingLine(unittest.TestCase):
+    """Every authenticated request prints exactly one TIMING line (spec 007 AC 1)."""
+
+    _MARKER = "זית-קלמטה-7731"  # unique text that must never reach the log
+
+    def _timing_lines(self, env, patches=()):
+        import contextlib
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for target, kwargs in patches:
+                stack.enter_context(patch(target, **kwargs))
+            with contextlib.redirect_stdout(out):
+                status, _ = _call_app(env)
+        lines = [l for l in out.getvalue().splitlines() if l.startswith("TIMING ")]
+        return status, lines
+
+    def test_chat_message_logs_one_line_without_content(self):
+        env = _make_environ(body={"message": {"text": self._MARKER, "chat": {"id": 999}}})
+        status, lines = self._timing_lines(env, (
+            ("cellar.CellarBackend.get_state", {"return_value": None}),
+            ("cellar.CellarBackend.list_wines", {"return_value": []}),
+            ("sommelier_ai.SommelierAI.parse_request",
+             {"return_value": {"intent": "chat", "wine_row": 0, "status": "", "details": ""}}),
+            ("chat_flow.answer_chat", {}),
+            ("api.index.answer_chat", {}),
+        ))
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("in=text route=chat", lines[0])
+        self.assertNotIn(self._MARKER, lines[0])
+        self.assertNotIn("999", lines[0])
+
+    def test_early_return_still_logs_one_line(self):
+        env = _make_environ(body={"some_other_key": {}})
+        status, lines = self._timing_lines(env)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("route=no_message", lines[0])
+
+    def test_callback_route_is_its_namespace_only(self):
+        env = _make_environ(body={"callback_query": {
+            "id": "c1", "data": "delete:confirm:secret-token-xyz",
+            "message": {"chat": {"id": 999}, "message_id": 5}}})
+        status, lines = self._timing_lines(env, (
+            ("deletewine.DeleteWine.handle_callback", {"return_value": True}),
+        ))
+        self.assertEqual(len(lines), 1)
+        self.assertIn("in=callback route=callback:delete", lines[0])
+        self.assertNotIn("secret-token-xyz", lines[0])
+
+    def test_rejected_secret_logs_nothing(self):
+        env = _make_environ(secret="wrong")
+        status, lines = self._timing_lines(env)
+        self.assertEqual(status, "401 Unauthorized")
+        self.assertEqual(lines, [])
+
+
 if __name__ == "__main__":
     unittest.main()
