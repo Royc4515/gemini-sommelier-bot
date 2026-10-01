@@ -116,7 +116,7 @@ ALLOWED_USER_ID=your_telegram_chat_id         # restrict the bot to a single use
 SHEETS_MEMORY_URL=https://script.google.com/.../exec   # Apps Script Web App (memory + /addwine)
 SHEETS_SECRET=shared_secret                   # must match BOT_SECRET in the Apps Script properties
 CELLAR_FILE_ID=your_cellar_spreadsheet_id     # defaults to the bundled sheet id
-CRON_SECRET=random_long_string                # enables /api/smoke (daily live check); 401 without it
+CRON_SECRET=random_long_string                # enables /api/smoke (live check after each change); 401 without it
 ```
 > **`SHEETS_SECRET`**: the Apps Script Web App is deployed "Anyone", so this shared
 > secret (matched against the script's `BOT_SECRET` property) is what protects your
@@ -131,8 +131,9 @@ python selftest_overhaul.py        # architecture smoke check (also run in CI)
 **Live smoke test (spec 008).** `/api/smoke` sends 5 questions, a label photo and
 `/status` + `/cancel` through the deployed bot as a synthetic chat, against the real
 Gemini and Apps Script, captures the replies instead of sending them, and messages
-you a one-line verdict (pass count, median reply time, memory health). Vercel Cron
-runs it every morning (06:00 UTC); to run it by hand:
+you a one-line verdict (pass count, median reply time, memory health). It runs
+after each change: a daily Vercel Cron check (06:00 UTC) tests any deployment
+not tested yet and stays silent otherwise. To run it by hand:
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" "https://<your-app>.vercel.app/api/smoke?source=deploy"
 ```

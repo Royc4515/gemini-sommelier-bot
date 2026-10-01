@@ -7,8 +7,9 @@ cancelled with /cancel. Apps Script, Gemini and the cellar CSV are the real ones
 only Telegram is captured (dry_run). Each request's TIMING line is checked, and a
 one-line verdict goes to the owner on Telegram.
 
-Served by the webhook's own app at /api/smoke (see endpoint()): daily from
-Vercel Cron, and on demand after a deploy with ?source=deploy.
+Served by the webhook's own app at /api/smoke (see endpoint()): by Claude right
+after a deploy (?source=deploy), and by a daily Vercel Cron check that runs only
+when the live deployment hasn't been tested yet (spec 008 AC 8).
 """
 
 import hmac
@@ -57,6 +58,8 @@ class Case:
 
 
 SMOKE_PATH = "/api/smoke"
+# KV key holding the last deployment a run finished against (spec 008 AC 8).
+_TESTED_KEY = "smoke:tested_deployment"
 
 
 def is_smoke_request(environ) -> bool:
@@ -91,10 +94,45 @@ def endpoint(environ, start_response, webhook):
         return _respond("401 Unauthorized", {"error": "unauthorized"})
 
     query = parse_qs(environ.get("QUERY_STRING", ""))
-    source = "deploy" if query.get("source", [""])[0] == "deploy" else "daily"
+    source = "deploy" if query.get("source", [""])[0] == "deploy" else "cron"
+    deployment = os.environ.get("VERCEL_DEPLOYMENT_ID", "")
+    # The owner wants a message after a change, not every day: the daily cron
+    # call only catches a deployment nobody has tested yet.
+    if source == "cron" and already_tested(deployment):
+        return _respond("200 OK", {"source": source, "skipped": True,
+                                   "deployment": deployment})
     report = run(webhook, source=source)
+    report["deployment"] = deployment
     notify(report)
+    _mark_tested(deployment)
     return _respond("200 OK", report)
+
+
+def already_tested(deployment: str) -> bool:
+    """True only if a finished run is on record for *deployment*.
+
+    Anything uncertain (no id, a failed read) answers False: an extra message
+    is cheaper than a change that silently never gets tested.
+    """
+    if not deployment:
+        return False
+    try:
+        record = CellarBackend().peek_state(_TESTED_KEY)
+    except Exception as exc:
+        sys.stderr.write(f"ERROR: smoke tested-deployment read failed: {exc}\n")
+        return False
+    return isinstance(record, dict) and record.get("deployment") == deployment
+
+
+def _mark_tested(deployment: str) -> None:
+    """Record *deployment* as tested. Best-effort: a lost write costs one rerun."""
+    if not deployment:
+        return
+    try:
+        CellarBackend().set_state(_TESTED_KEY, {"deployment": deployment,
+                                                "tested_at": time.time()})
+    except Exception as exc:
+        sys.stderr.write(f"ERROR: smoke tested-deployment write failed: {exc}\n")
 
 
 def _authorized(environ) -> bool:
@@ -116,7 +154,7 @@ def cases() -> list[Case]:
     return out
 
 
-def run(webhook, source: str = "daily") -> dict:
+def run(webhook, source: str = "cron") -> dict:
     """Run every case through *webhook* (a WSGI app); return a JSON-able report."""
     _reset_smoke_chat()
     with open(_FIXTURE, "rb") as fh:
@@ -197,7 +235,8 @@ def evaluate(case: Case, status: str, capture: dry_run.Capture, seconds: float) 
 
 def summary(report: dict) -> str:
     """One Hebrew line (plus a bullet per failing case) for the owner."""
-    label = "בדיקה יומית" if report["source"] == "daily" else "בדיקה אחרי עדכון"
+    # Both sources now test a change (spec 008 AC 8), so one label fits both.
+    label = "בדיקה אחרי עדכון"
     icon = "✅" if report["ok"] else "❌"
     median = report["median_reply_s"]
     median_text = f"{median} שנ'" if median is not None else "אין נתון"
@@ -238,7 +277,7 @@ def _post(webhook, message: dict) -> str:
 def _reset_smoke_chat() -> None:
     """Start each run from a clean synthetic chat.
 
-    Memory is cleared so a daily run never grows the smoke chat's summary, and a
+    Memory is cleared so repeated runs never grow the smoke chat's summary, and a
     /status left open by a run that died mid-way can't swallow question 1.
     """
     chat_id = dry_run.SMOKE_CHAT_ID

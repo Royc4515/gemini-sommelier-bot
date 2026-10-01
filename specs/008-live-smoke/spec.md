@@ -1,6 +1,8 @@
 # Feature 008 - Automated live smoke test
 
-**Status:** approved (owner, 2026-10-01: "כן, תתחיל. 09:00 מתאים" ("yes, start. 09:00 works"))
+**Status:** approved (owner, 2026-10-01: "כן, תתחיל. 09:00 מתאים" ("yes, start. 09:00 works"));
+amended 2026-10-01: run only after a change, not every day (owner: "רק אחרי
+שינויים לא כל יום" ("only after changes, not every day"))
 **Author/date:** Claude / 2026-10-01
 
 ## Why
@@ -16,10 +18,9 @@ hour of the deploy. Both checks need data that arrives on its own:
 - the same check right after each deploy.
 
 ## User stories
-- As the owner, I get one short Telegram message each morning saying whether
-  the bot works and how fast it answers, without doing anything.
-- As the owner, after Claude ships a change I get the same message for that
-  deploy.
+- As the owner, after every change to the bot I get one short Telegram message
+  saying whether it works and how fast it answers, without doing anything.
+- As the owner, I get no message on a day nothing changed.
 - As the owner, a failing check tells me which step failed.
 
 ## Acceptance criteria
@@ -60,8 +61,21 @@ hour of the deploy. Both checks need data that arrives on its own:
    target.
 7. The owner gets a one-line Hebrew verdict, plus a line per failing case. The
    full report is the HTTP response body.
-8. Vercel Cron calls it daily at 06:00 UTC. That is 09:00 Israel summer time and
-   08:00 in winter; the Hobby plan fires within that hour.
+8. Only after a change (amended 2026-10-01). A deployment is "tested" once a run
+   against it has finished. Its Vercel deployment id is then stored in the Apps
+   Script KV, with no TTL.
+   - Vercel Cron calls the endpoint daily at 06:00 UTC: 09:00 Israel summer
+     time, 08:00 in winter; the Hobby plan fires within that hour.
+   - If the live deployment was already tested, the cron call runs nothing,
+     sends nothing and answers `{"skipped": true}`. A deployment nobody tested
+     yet, such as one shipped outside a Claude session, is tested that
+     morning.
+   - `?source=deploy`, sent by Claude right after a deploy, always runs.
+   - If the stored id can't be read, or the deployment id is unknown, the
+     cron call runs anyway. The bias is towards testing, at the cost of an
+     extra message.
+   - A redeploy with no code change, such as after editing an env var, counts
+     as a change: it gets a new deployment id.
 9. The run stops starting new cases after 240 s, so it reports instead of being
    killed at the function's 300 s limit.
 10. Each run starts from a clean smoke chat:
@@ -74,8 +88,11 @@ hour of the deploy. Both checks need data that arrives on its own:
 - Write flows that change the cellar (`/addwine` confirm, edit, delete): the
   smoke test must never touch Roy's sheet.
 - Real Telegram delivery and file download: checked by every real message.
-- Keeping history: one message a day; the logs keep the TIMING lines for an
-  hour.
+- Keeping history: one message per change; the logs keep the TIMING lines for
+  an hour.
+- Apps Script changes: a redeploy of `apps_script.js` is not a Vercel
+  deployment, so it isn't detected. After one, Claude runs `?source=deploy` by
+  hand.
 
 ## Cost
 About 11 model calls a run:
@@ -83,4 +100,5 @@ About 11 model calls a run:
 - 1 photo call;
 - the `/status` picker uses none.
 
-At once a day, plus once per deploy, this is well inside the free tier.
+Once per deploy (the daily cron check costs one Apps Script read), this is well
+inside the free tier.

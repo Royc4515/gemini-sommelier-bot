@@ -30,3 +30,7 @@
   Before the run, two deploy fixes were needed:
   - the Python preset served `/api/smoke` from the webhook, fixed in #21;
   - `CRON_SECRET` was missing from Production until the owner's second fix.
+- [x] T7. Only after a change (AC 8 as amended): the cron call skips a deployment
+  already tested; every finished run stores the deployment id
+  (`CellarBackend.peek_state` reads it with no TTL). Tests in
+  `tests/test_smoke.py`.
