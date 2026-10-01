@@ -45,7 +45,8 @@ class TestChatMemory(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(["unexpected"]).encode("utf-8")
         mock_urlopen.return_value.__enter__.return_value = mock_resp
-        self.assertEqual(self.memory.get_context("123"), ([], ""))
+        # Unreadable, not empty: the caller must not save over it (spec 009 AC 9).
+        self.assertIsNone(self.memory.get_context("123"))
 
     @patch("urllib.request.urlopen")
     def test_save_turn(self, mock_urlopen):

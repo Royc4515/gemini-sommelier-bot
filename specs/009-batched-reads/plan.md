@@ -1,6 +1,6 @@
 # Plan - Feature 009 One Apps Script read per message
 
-**Status:** draft, awaiting owner approval
+**Status:** approved (owner, 2026-10-01)
 **Spec:** ./spec.md
 
 ## Approach

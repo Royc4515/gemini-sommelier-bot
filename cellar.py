@@ -15,15 +15,12 @@ everything wine-related from THIS module so the flows depend on one stable name:
     Re-exported below.
 """
 
-import contextvars
-import copy
 import os
 import sys
-import threading
 import time
-from contextlib import contextmanager
 
 from apps_script_client import AppsScriptClient
+import request_reads
 import timing
 
 # Re-exported so callers keep importing the column model + fill parser from
@@ -49,61 +46,65 @@ SHEET_LINK = f"https://docs.google.com/spreadsheets/d/{CELLAR_FILE_ID}"
 
 
 # ======================================================================
-# Request-scoped flow-state cache (spec 007 AC 3, 9)
+# Request-scoped reads (spec 007 AC 3, 9; spec 009)
 # ======================================================================
 
-class _StateCache:
-    """Flow states already read (or written) during this request, by key.
+# The webhook still opens the request scope under its spec 007 name.
+request_state_cache = request_reads.scope
 
-    Shared by the request's worker threads, so locked. Values are deep-copied in
-    and out: a flow that mutates the dict it got back must not change what the
-    next reader sees unless it writes it through set_state.
+# don't touch / spec 009 decision 1: exactly one retry, after a short pause. The
+# live failures were rejections at 4.6-9.4 s, not slow answers, so a second try
+# usually lands; a third would push a bad moment past the 45 s cap.
+_BUNDLE_RETRY_PAUSE_S = 0.5
+
+
+def prefetch_reads(pool, chat_id: str, state_keys: list[str]):
+    """Start this request's ONE Apps Script read (spec 009); return its future.
+
+    Reads the flow states for *state_keys*, the chat's memory and the cellar
+    list in a single call, and parks them in the request snapshot. Readers that
+    start before it lands wait for it instead of calling Apps Script. With no
+    *pool* (a button tap) the read runs inline and None is returned.
     """
-
-    def __init__(self):
-        self._values: dict[str, dict | None] = {}
-        self._lock = threading.Lock()
-
-    def lookup(self, key: str) -> tuple[bool, dict | None]:
-        with self._lock:
-            if key not in self._values:
-                return False, None
-            return True, copy.deepcopy(self._values[key])
-
-    def store(self, key: str, value: dict | None) -> None:
-        with self._lock:
-            self._values[key] = copy.deepcopy(value)
-
-
-_state_cache: contextvars.ContextVar = contextvars.ContextVar("cellar_state_cache", default=None)
-
-
-@contextmanager
-def request_state_cache():
-    """Cache flow-state reads for one request; everything is dropped on exit (AC 9)."""
-    token = _state_cache.set(_StateCache())
-    try:
-        yield
-    finally:
-        _state_cache.reset(token)
-
-
-def _remember(key: str, value: dict | None) -> None:
-    """Write-through: keep the request cache equal to what was just written."""
-    cache = _state_cache.get()
-    if cache is not None:
-        cache.store(key, value)
+    if pool is None:
+        _load_bundle(str(chat_id), list(state_keys))
+        return None
+    future = timing.run_in(pool, _load_bundle, str(chat_id), list(state_keys))
+    request_reads.set_pending(future)
+    return future
 
 
 def prefetch_states(pool, keys: list[str]) -> list:
-    """Read every flow-state *key* at once into the request cache (AC 3).
+    """Read every flow-state *key* at once, one call per key (spec 007 AC 3).
 
-    Returns the futures so the caller can wait for them. Each read degrades on
-    its own (get_state returns None on failure, AC 8), so one slow or failing
-    key never blocks or breaks the others.
+    Since spec 009 this is the fallback for an Apps Script that predates the
+    bundle. Each read degrades on its own (get_state returns None on failure).
     """
     backend = CellarBackend()
     return [timing.run_in(pool, backend.get_state, key) for key in keys]
+
+
+def _load_bundle(chat_id: str, state_keys: list[str]) -> None:
+    """Fill the request snapshot from one bundle read. Never raises."""
+    request_reads.loading()
+    backend = CellarBackend()
+    if not backend.configured:
+        request_reads.mark_legacy()  # every reader returns its own empty default
+        return
+    try:
+        doc = backend.read_bundle(state_keys, chat_id)
+    except Exception:
+        # Both attempts failed (logged in read_bundle). Degrade everything at
+        # once, as spec 007 AC 8 says, rather than let each reader retry alone.
+        for key in state_keys:
+            request_reads.store_state(key, None)
+        request_reads.fail_memory(chat_id)
+        request_reads.store_wines([])
+        return
+    if doc is None:
+        request_reads.mark_legacy()
+        return
+    backend.absorb_bundle(doc, state_keys, chat_id)
 
 
 # ======================================================================
@@ -133,18 +134,15 @@ class CellarBackend:
     def get_state(self, chat_id: str) -> dict | None:
         """Return the live state dict, or None if absent/expired.
 
-        Within a request_state_cache() a key is read from Apps Script at most
-        once; later reads (and the flows' own checks after a prefetch) are
-        answered from the cache, which set_state / clear_state keep current.
+        Within a request a key is read from Apps Script at most once: the
+        bundle (spec 009) or the first read answers it, and set_state /
+        clear_state keep the answer current.
         """
-        cache = _state_cache.get()
-        if cache is not None:
-            hit, value = cache.lookup(chat_id)
-            if hit:
-                return value
+        hit, value = request_reads.lookup_state(chat_id)
+        if hit:
+            return value
         value = self._read_state(chat_id)
-        if cache is not None:
-            cache.store(chat_id, value)
+        request_reads.store_state(chat_id, value)
         return value
 
     def _read_state(self, chat_id: str) -> dict | None:
@@ -154,15 +152,81 @@ class CellarBackend:
             doc = self._api.get_json({"action": "addwine_state", "chat_id": chat_id})
         except Exception:
             return None
+        return self._state_from_doc(chat_id, doc)
 
+    def _state_from_doc(self, key: str, doc: dict) -> dict | None:
+        """The live state in a stored *doc* ({state, updated_at}), or None."""
         state = doc.get("state")
         if not state:
             return None
         # reason: a crashed/abandoned flow must not trap the user forever; expire it.
         if (time.time() - float(doc.get("updated_at") or 0)) > self.TTL_SEC:
-            self.clear_state(chat_id)
+            self.clear_state(key)
             return None
         return state
+
+    def read_bundle(self, state_keys: list[str], chat_id: str) -> dict | None:
+        """ONE read for everything a message may need (spec 009).
+
+        Returns the bundle document, or None when the Apps Script predates the
+        "bundle" action (its answer lacks the marker). A transport failure is
+        retried once after a short pause; if that fails too, it raises.
+        """
+        params = {"action": "bundle", "state": list(state_keys),
+                  "memory": str(chat_id), "wines": "1"}
+        for attempt in (1, 2):
+            try:
+                doc = self._api.get_json(params)
+                break
+            except Exception as exc:
+                # Type + message only (never the URL, it carries the secret), so
+                # the next smoke run shows what Apps Script actually returned.
+                detail = self._api.redact(f"{type(exc).__name__}: {exc}")
+                sys.stderr.write(f"ERROR: bundle read failed (attempt {attempt}/2): {detail}\n")
+                if attempt == 2:
+                    raise
+                time.sleep(_BUNDLE_RETRY_PAUSE_S)
+        if not isinstance(doc, dict) or doc.get("bundle") != 1:
+            return None
+        return doc
+
+    def absorb_bundle(self, doc: dict, state_keys: list[str], chat_id: str) -> None:
+        """Park each part of a bundle in the request snapshot. Never raises.
+
+        A part that failed (or came back malformed) degrades on its own, exactly
+        as a single failed read would, and is marked in the TIMING line.
+        """
+        try:
+            states = _part(doc, "states")
+            if not isinstance(states, dict):
+                raise ValueError("states part is not a mapping")
+        except Exception as exc:
+            _part_failed("states", exc)
+            states = {}
+        for key in state_keys:
+            try:
+                value = self._state_from_doc(key, states.get(key) or {})
+            except Exception as exc:
+                # One bad row (or a failed expiry clear) costs only its own flow.
+                sys.stderr.write(f"ERROR: bundle state unreadable: {type(exc).__name__}: {exc}\n")
+                value = None
+            request_reads.store_state(key, value)
+        try:
+            memory = _part(doc, "memory")
+            if not isinstance(memory, dict):
+                raise ValueError("memory part is not a document")
+            request_reads.store_memory(str(chat_id), memory)
+        except Exception as exc:
+            _part_failed("memory", exc)
+            request_reads.fail_memory(str(chat_id))
+        try:
+            wines = _part(doc, "wines")
+            if not isinstance(wines, list):
+                raise ValueError("wines part is not a list")
+            request_reads.store_wines(wines)
+        except Exception as exc:
+            _part_failed("wines", exc)
+            request_reads.store_wines([])
 
     def peek_state(self, key: str) -> dict | None:
         """The value stored under *key*, with no flow TTL. Raises if it can't be read.
@@ -177,12 +241,12 @@ class CellarBackend:
     def set_state(self, chat_id: str, state: dict) -> None:
         self._api.post_json({"action": "addwine_state", "chat_id": chat_id,
                              "state": state, "updated_at": time.time()})
-        _remember(chat_id, state)
+        request_reads.store_state(chat_id, state)
 
     def clear_state(self, chat_id: str) -> None:
         # state=null tells the Apps Script to delete the row.
         self._api.post_json({"action": "addwine_state", "chat_id": chat_id, "state": None})
-        _remember(chat_id, None)
+        request_reads.store_state(chat_id, None)
 
     def append_rows(self, rows: list[list], status: str = "Closed") -> dict:
         """Append wine rows (A-N) to the cellar. Raises on failure.
@@ -191,7 +255,10 @@ class CellarBackend:
         outside A-N) for each new row, so a freshly added bottle defaults to
         Closed (unopened).
         """
-        result = self._api.post_json({"action": "add_wine", "rows": rows, "status": status})
+        try:
+            result = self._api.post_json({"action": "add_wine", "rows": rows, "status": status})
+        finally:
+            request_reads.forget_wines()  # even a failed write may have landed
         if result.get("status") != "success":
             raise RuntimeError(f"Cellar append failed: {result}")
         return result
@@ -202,8 +269,13 @@ class CellarBackend:
         Each item is ``{"row": <1-indexed sheet row>, "values": [A..N],
         "status": <status cell>}``. Used by /editwine to let the user pick a
         bottle and edit it in place (the row index is the unambiguous handle).
-        Returns [] if the backend is unconfigured or the call fails.
+        Returns [] if the backend is unconfigured or the call fails. Within a
+        request the bundle (spec 009) or the first read answers it, until a
+        cellar write in the same request drops it.
         """
+        hit, wines = request_reads.lookup_wines()
+        if hit:
+            return wines
         if not self._api.configured:
             return []
         try:
@@ -211,7 +283,9 @@ class CellarBackend:
         except Exception as exc:
             sys.stderr.write(f"ERROR: list_wines failed: {exc}\n")
             return []
-        return doc.get("wines") or []
+        wines = doc.get("wines") or []
+        request_reads.store_wines(wines)
+        return wines
 
     def update_wine(self, row: int, values: list, expect: dict) -> dict:
         """Overwrite columns A-N of *row* with *values*. Raises on failure.
@@ -221,9 +295,12 @@ class CellarBackend:
         that shifted between listing and confirmation is refused instead of
         clobbering the wrong bottle.
         """
-        result = self._api.post_json({
-            "action": "update_wine", "row": row, "values": values, "expect": expect,
-        })
+        try:
+            result = self._api.post_json({
+                "action": "update_wine", "row": row, "values": values, "expect": expect,
+            })
+        finally:
+            request_reads.forget_wines()
         if result.get("status") != "success":
             raise RuntimeError(f"Cellar update failed: {result}")
         return result
@@ -234,9 +311,12 @@ class CellarBackend:
         Only the status cell is written (A-N and O/P/Q untouched). *expect*
         carries the bottle's original identity so a shifted row is refused.
         """
-        result = self._api.post_json({
-            "action": "set_status", "row": row, "status": status, "expect": expect,
-        })
+        try:
+            result = self._api.post_json({
+                "action": "set_status", "row": row, "status": status, "expect": expect,
+            })
+        finally:
+            request_reads.forget_wines()
         if result.get("status") != "success":
             raise RuntimeError(f"Set status failed: {result}")
         return result
@@ -248,9 +328,25 @@ class CellarBackend:
         identity (winery + wine_name); the Apps Script refuses the delete if that
         row no longer matches, so a shifted row can't take the wrong bottle down.
         """
-        result = self._api.post_json({
-            "action": "delete_wine", "row": row, "expect": expect,
-        })
+        try:
+            result = self._api.post_json({
+                "action": "delete_wine", "row": row, "expect": expect,
+            })
+        finally:
+            request_reads.forget_wines()
         if result.get("status") != "success":
             raise RuntimeError(f"Cellar delete failed: {result}")
         return result
+
+
+def _part(doc: dict, name: str):
+    """The "ok" value of bundle part *name*; raises if it failed or is missing."""
+    part = doc.get(name)
+    if not isinstance(part, dict) or "ok" not in part:
+        raise ValueError((part or {}).get("error") if isinstance(part, dict) else "missing")
+    return part["ok"]
+
+
+def _part_failed(name: str, exc: Exception) -> None:
+    sys.stderr.write(f"ERROR: bundle part {name} failed: {type(exc).__name__}: {exc}\n")
+    timing.fail(f"as:part:{name}")

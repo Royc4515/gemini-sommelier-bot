@@ -25,7 +25,9 @@ from editwine import EditWine             # noqa: E402
 from statuswine import StatusWine         # noqa: E402
 from deletewine import DeleteWine          # noqa: E402
 from orchestrator import Orchestrator      # noqa: E402
-from cellar import CellarBackend, prefetch_states, request_state_cache  # noqa: E402
+from cellar import (  # noqa: E402
+    CellarBackend, prefetch_reads, prefetch_states, request_state_cache,
+)
 from chat_flow import ChatDraft            # noqa: E402
 from set_commands import BOT_COMMANDS     # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
@@ -33,6 +35,7 @@ from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
 from wine_inventory import WineInventory  # noqa: E402
 import dry_run                            # noqa: E402
+import request_reads                      # noqa: E402
 import smoke_runner                       # noqa: E402
 import timing                             # noqa: E402
 
@@ -47,6 +50,12 @@ _CALLBACK_FLOWS = (AddWine, EditWine, StatusWine, DeleteWine, Orchestrator)
 
 _OK = ("200 OK", "OK")
 
+
+def _state_keys(chat_id) -> list[str]:
+    """Every flow-state key an update for *chat_id* may read (spec 009 bundle)."""
+    return ([flow.state_key(str(chat_id)) for flow in _MESSAGE_FLOWS]
+            + [Orchestrator.state_key(str(chat_id))])
+
 # Voice notes larger than Telegram's getFile cap can't be downloaded.
 _MAX_VOICE_BYTES = 20 * 1024 * 1024
 
@@ -56,6 +65,9 @@ def _handle_callback_query(callback: dict, allowed_user_id: str) -> tuple[str, s
     cb_chat_id = callback.get("message", {}).get("chat", {}).get("id")
     if allowed_user_id and str(cb_chat_id) != allowed_user_id and not dry_run.allows(cb_chat_id):
         return ("200 OK", "OK — unauthorized user")
+    # One read for whatever the tapped flow needs (spec 009); inline, since a
+    # tap has no pool. Against an old Apps Script the flows read on their own.
+    prefetch_reads(None, str(cb_chat_id), _state_keys(cb_chat_id))
     claimed = False
     try:
         # Try each in turn until one consumes the tap (orchestrator last).
@@ -327,25 +339,23 @@ def _route_update(environ, _respond):
 def _route_message(pool, message: dict, chat_id, _respond):
     """Walk a message through flows -> bare photo -> commands -> orchestrator -> chat.
 
-    Every read this message may need starts up front, together (spec 007 AC 3):
-    the four flow states always, and for a plain question (the common case, not a
-    /command) also the cellar list, memory and CSV the orchestrator and the chat
-    answer use. The routing order below is unchanged; a read a stage turns out
-    not to need is dropped when the request ends (AC 8).
+    Every Apps Script read this message may need is ONE call, started up front
+    (spec 009): the flow states, memory and cellar list. For a plain question
+    (the common case, not a /command) the cellar list, memory and CSV reads the
+    orchestrator and the chat answer use also start now; they wait on that call
+    instead of making their own. The routing order below is unchanged.
     """
     text = message.get("text") or ""
     plain_question = bool(text.strip()) and not text.strip().startswith("/")
-    states = prefetch_states(
-        pool, [flow.state_key(str(chat_id)) for flow in _MESSAGE_FLOWS]
-    )
+    bundle = prefetch_reads(pool, str(chat_id), _state_keys(chat_id))
     wines = draft = None
     if plain_question:
         wines = timing.run_in(pool, CellarBackend().list_wines)
         draft = ChatDraft(pool, chat_id)
         with TelegramClient().keep_typing(chat_id):
-            futures.wait(states)
+            _await_states(pool, bundle, chat_id)
     else:
-        futures.wait(states)
+        _await_states(pool, bundle, chat_id)
 
     # --- Write flows (/addwine, /editwine, /status, /delete + in-flow text/photos) ---
     # Runs before the non-text guard so it can receive label photos. Each returns
@@ -385,6 +395,19 @@ def _route_message(pool, message: dict, chat_id, _respond):
     # --- Orchestrator, else the sommelier answer ---
     _act_or_answer(pool, chat_id, text, wines, draft)
     return _respond(*_OK)
+
+
+def _await_states(pool, bundle, chat_id) -> None:
+    """Wait until the flow states are known, before the flows look at them.
+
+    Against an Apps Script that predates the bundle, fall back to today's four
+    parallel reads. That runs here on the request thread, never inside a pool
+    task, so it can't starve the pool the waiting readers sit on.
+    """
+    futures.wait([bundle])
+    if request_reads.is_legacy():
+        futures.wait(prefetch_states(
+            pool, [flow.state_key(str(chat_id)) for flow in _MESSAGE_FLOWS]))
 
 
 def _act_or_answer(pool, chat_id, text: str, wines, draft: ChatDraft) -> None:

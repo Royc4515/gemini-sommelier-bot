@@ -47,10 +47,15 @@ class AppsScriptClient:
         query = dict(params)
         if self._secret:
             query["key"] = self._secret
-        url = f"{self._url}?{urllib.parse.urlencode(query)}"
+        # doseq: a list value goes out as a repeated param (the bundle's state keys).
+        url = f"{self._url}?{urllib.parse.urlencode(query, doseq=True)}"
         with timing.stage(_stage_name("get", params)):
             with urllib.request.urlopen(url, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
+
+    def redact(self, text: str) -> str:
+        """*text* with the shared secret blanked, for error messages that get logged."""
+        return text.replace(self._secret, "***") if self._secret else text
 
     def post_json(self, payload: dict) -> dict:
         """POST *payload* as JSON, signing it with the secret; return parsed JSON.

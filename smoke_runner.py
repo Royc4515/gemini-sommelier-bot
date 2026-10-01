@@ -46,6 +46,9 @@ QUESTIONS = (
     "מה להגיש עם סלמון בתנור?",
 )
 
+# Reads that are retried once by design (spec 009 AC 3): a failure followed by a
+# success under the same name cost time, not data, so it is reported, not failed.
+_RETRIED_READS = ("as:get:bundle",)
 _ERROR_PREFIX = "⚠️"   # the bot's generic error replies start with it
 _STAGE = re.compile(r"(\S+)=(\d+\.\d+)")
 
@@ -177,7 +180,10 @@ def run(webhook, source: str = "cron") -> dict:
 
     replies = [r["reply_s"] for r in results if r.get("question") and r.get("reply_s") is not None]
     median = round(statistics.median(replies), 1) if replies else None
-    memory_ok = not any("as:get:memory" in p for r in results for p in r.get("failed_stages", []))
+    # Memory is lost by a failed memory read or part, or by a bundle that failed
+    # even after its retry (spec 009).
+    memory_ok = not any("memory" in p or p in _RETRIED_READS
+                        for r in results for p in r.get("failed_stages", []))
     passed = sum(1 for r in results if r["ok"])
     return {
         "source": source,
@@ -198,7 +204,9 @@ def evaluate(case: Case, status: str, capture: dry_run.Capture, seconds: float) 
     # A model attempt that failed over to the next model still answered: note it
     # (it costs time) but don't fail on it. Any other failed stage is a fault.
     failed = [n[:-len("(fail)")] for n in stage_names if n.endswith("(fail)")]
-    faults = [n for n in failed if not n.startswith("gemini:")]
+    succeeded = {n for n in stage_names if not n.endswith("(fail)")}
+    retried = [n for n in failed if n in _RETRIED_READS and n in succeeded]
+    faults = [n for n in failed if not n.startswith("gemini:") and n not in retried]
     fallbacks = [n for n in failed if n.startswith("gemini:")]
     values = dict(stages)
     reply_s = float(values["reply_at"]) if "reply_at" in values else None
@@ -227,6 +235,7 @@ def evaluate(case: Case, status: str, capture: dry_run.Capture, seconds: float) 
         "problems": problems,
         "failed_stages": faults,
         "model_fallbacks": fallbacks,
+        "retried": retried,
         "reply_s": reply_s,
         "request_s": round(request_s, 2),
         "timing": line,
@@ -241,8 +250,10 @@ def summary(report: dict) -> str:
     median = report["median_reply_s"]
     median_text = f"{median} שנ'" if median is not None else "אין נתון"
     memory = "זיכרון תקין" if report["memory_ok"] else "הזיכרון לא נקרא"
+    retries = sum(len(r.get("retried") or []) for r in report["results"])
+    retry_text = f" | קריאות שנוסו שוב: {retries}" if retries else ""
     lines = [f"{icon} {label}: {report['passed']}/{report['total']} עברו | "
-             f"חציון תשובה {median_text} (יעד {TARGET_MEDIAN_S:.0f}) | {memory}"]
+             f"חציון תשובה {median_text} (יעד {TARGET_MEDIAN_S:.0f}) | {memory}{retry_text}"]
     for r in report["results"]:
         if not r["ok"]:
             lines.append(f"• {r['name']}: {', '.join(r['problems'])}")

@@ -10,6 +10,7 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 - `orchestrator.py` - free-text intent router (set_status / delete / add / edit / chat).
 - `addwine.py`, `editwine.py`, `statuswine.py`, `deletewine.py` - stateful write flows; `cellar_picker.py` shared bottle picker.
 - `cellar.py` (facade), `cellar_model.py` (A-N column model), `cellar_fill.py` (`key: value` parser), `apps_script_client.py` (the one HTTP/secret transport).
+- `request_reads.py` - request-scoped snapshot (spec 009): each update makes ONE Apps Script read (`action=bundle`: flow states, memory, cellar list) via `cellar.prefetch_reads`; `get_state` / `list_wines` / `ChatMemory._fetch_document` wait on it instead of calling Apps Script. Retried once; on final failure everything degrades (no flow, memory unavailable, []), never per-reader re-reads. An old script (no `bundle` marker) falls back to the per-item reads.
 - `smoke_runner.py` - automated live smoke test (spec 008), served at `/api/smoke` by the same app (`api/index.py` dispatches by path): runs 8 fixed cases through the real webhook in-process as chat `smoke`, Telegram captured by `dry_run.py`, verdict sent to the owner. Fixture in `smoke_fixtures/`.
 - `wine_inventory.py` - read path via public CSV export. `chat_memory.py` - 2-layer memory (30 active messages + summary).
 - `apps_script.js` - Google Apps Script Web App that performs every sheet write and holds flow state. Deployed by hand, not by Vercel.
@@ -18,7 +19,7 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 
 ## Commands
 - Install: `pip install -r requirements.txt` (verified, in a venv).
-- Unit tests: `python -m unittest discover -s tests` (verified: 251 tests OK, run on Python 3.11 locally; CI uses 3.12).
+- Unit tests: `python -m unittest discover -s tests` (verified: 268 tests OK, run on Python 3.11 locally; CI uses 3.12).
 - Smoke: `python selftest_overhaul.py` (verified: 21 passed). CI runs both on push/PR to `main` (`.github/workflows/tests.yml`).
 - Live Apps Script contract check: `SHEETS_MEMORY_URL=... SHEETS_SECRET=... python smoke_editwine.py [--write-test]` (unverified; hits the real sheet).
 - Register the `/` menu after changing commands: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified).
@@ -52,6 +53,7 @@ Changing the order, codes, retry counts or error classification requires a test 
 - `apps_script.js` `_authorized` fails OPEN when `BOT_SECRET` is unset; `SHEETS_SECRET` and `BOT_SECRET` must both be set.
 - The webhook fails CLOSED if `TELEGRAM_SECRET_TOKEN` is unset (401). If `ALLOWED_USER_ID` is unset the bot answers anyone.
 - The smoke chat (`smoke`) passes the `ALLOWED_USER_ID` gate only via `dry_run.allows`, i.e. only while the in-process runner holds a capture ContextVar. Never let an HTTP input set that ContextVar.
+- `ChatMemory.get_context` returns None when memory couldn't be read; `save_turn(history=None)` then re-reads and SKIPS the write if that fails too. Never save a turn over an unread history: it erases the conversation and its summary (spec 009 AC 9).
 - Every invocation is a cold start; flow state lives in the Apps Script KV store keyed by chat_id, never in module globals.
 - `tests/test_addwine.py` imports `_parse_wine_json` from `sommelier_ai`; keep that re-export.
 - `build_plan` is the original prompt and is stale (gemini-2.5-flash, `api/webhook.py`, BaseHTTPRequestHandler). Trust the code and `specs/`.

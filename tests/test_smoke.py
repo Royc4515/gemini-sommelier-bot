@@ -114,6 +114,33 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(r["ok"], r["problems"])
         self.assertEqual(r["model_fallbacks"], ["gemini:chat:m1"])
 
+    def test_a_bundle_read_retried_once_is_noted_not_failed(self):
+        case = smoke_runner.Case("שאלה 1", {}, question=True)
+        r = smoke_runner.evaluate(case, "200 OK", self._capture(
+            "TIMING in=text route=chat total=20.00 as:get:bundle(fail)=4.60 "
+            "as:get:bundle=2.10 reply_at=12.00"), 20.0)
+        self.assertTrue(r["ok"], r["problems"])          # spec 009 AC 3: cost time, not data
+        self.assertEqual(r["retried"], ["as:get:bundle"])
+        report = {"source": "deploy", "ok": True, "passed": 1, "total": 1,
+                  "median_reply_s": 12.0, "memory_ok": True, "results": [r]}
+        self.assertIn("קריאות שנוסו שוב: 1", smoke_runner.summary(report))
+
+    def test_a_bundle_that_failed_twice_loses_memory(self):
+        case = smoke_runner.Case("שאלה 1", {}, question=True)
+        r = smoke_runner.evaluate(case, "200 OK", self._capture(
+            "TIMING in=text route=chat total=20.00 as:get:bundle(fail)=15.00 "
+            "as:get:bundle(fail)=15.00 reply_at=33.00"), 34.0)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["retried"], [])
+        self.assertIn("as:get:bundle", r["failed_stages"])
+
+    def test_a_failed_memory_part_is_a_fault(self):
+        case = smoke_runner.Case("שאלה 1", {}, question=True)
+        r = smoke_runner.evaluate(case, "200 OK", self._capture(
+            "TIMING in=text route=chat total=9.00 as:get:bundle=2.00 "
+            "as:part:memory(fail)=0.00 reply_at=8.00"), 9.0)
+        self.assertEqual(r["failed_stages"], ["as:part:memory"])
+
     def test_error_reply_slow_request_and_no_reply_fail(self):
         case = smoke_runner.Case("שאלה 1", {}, question=True)
         r = smoke_runner.evaluate(case, "200 OK", self._capture(
@@ -140,6 +167,9 @@ class RunTests(unittest.TestCase):
             "cellar.CellarBackend._read_state": {"side_effect": lambda k: states.get(k)},
             "cellar.CellarBackend.set_state": {"side_effect": lambda k, v: states.__setitem__(k, v)},
             "cellar.CellarBackend.clear_state": {"side_effect": lambda k: states.pop(k, None)},
+            # Per-item reads (an Apps Script without the spec 009 bundle), so
+            # the flow-state dict above is what the flows see.
+            "cellar.CellarBackend.read_bundle": {"return_value": None},
             "cellar.CellarBackend.list_wines": {"return_value": [
                 {"row": 2, "status": "Closed", "values": ["Flam", "Classico"] + [""] * 12}]},
             "chat_memory.ChatMemory.get_context": {"return_value": ([], "")},

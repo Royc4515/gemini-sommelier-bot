@@ -33,6 +33,11 @@
  *
  * Backward compatibility: requests with no "action" field are treated as the
  * original memory protocol, so the running bot keeps working before redeploy.
+ *
+ * Reads (spec 009): the bot fetches everything a message needs with ONE
+ * "bundle" GET (flow states + memory + cellar list). The per-item actions stay
+ * for writes, for the bot's fallback before this file is redeployed, and for
+ * older bot versions.
  */
 
 // reason: the cellar lives in a DIFFERENT spreadsheet than this bound script,
@@ -70,6 +75,9 @@ function doGet(e) {
   }
   if (action === "list_wines") {
     return _jsonOut(_listWines());
+  }
+  if (action === "bundle") {
+    return _jsonOut(_bundleGet(e));
   }
   // Default: original memory read protocol (unchanged).
   return _jsonOut(_memoryGet(e.parameter.chat_id));
@@ -397,6 +405,61 @@ function _stateSet(payload) {
     sheet.appendRow([chatId, stateJson, updatedAt]);
   }
   return {"status": "success"};
+}
+
+
+// ====================================================================
+// One read per message (spec 009)
+// ====================================================================
+
+function _bundleGet(e) {
+  // Everything one incoming message may need, in ONE execution: six parallel
+  // calls per message were rejected by Apps Script together (spec 009).
+  // Query: state=<key> (repeated), memory=<chat_id>, wines=1.
+  // don't touch / the "bundle" marker is how the bot tells this script from an
+  // older one, which answers an unknown action with a memory error instead.
+  var out = {"bundle": 1};
+  var keys = (e.parameters && e.parameters.state) || [];
+  out.states = _part(function () { return _statesGet(keys); });
+  var chatId = e.parameter.memory;
+  if (chatId) {
+    out.memory = _part(function () { return _memoryGet(chatId); });
+  }
+  if (e.parameter.wines === "1") {
+    out.wines = _part(function () { return _listWines().wines; });
+  }
+  return out;
+}
+
+function _part(read) {
+  // One part failing (the cellar file, say) must not cost the bot the others.
+  try {
+    return {"ok": read()};
+  } catch (err) {
+    return {"error": String(err)};
+  }
+}
+
+function _statesGet(keys) {
+  // Same answer as _stateGet per key, from ONE pass over the state sheet.
+  var wanted = {};
+  for (var k = 0; k < keys.length; k++) wanted[String(keys[k])] = true;
+
+  var result = {};
+  var data = _stateSheet().getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var key = String(data[i][0]);
+    if (!wanted[key] || result[key]) continue; // first row wins, like _findRowByKey
+    var state = null;
+    try {
+      state = data[i][1] ? JSON.parse(data[i][1]) : null;
+    } catch (err) {}
+    result[key] = {"state": state, "updated_at": data[i][2] || 0};
+  }
+  for (var missing in wanted) {
+    if (!result[missing]) result[missing] = {"state": null, "updated_at": 0};
+  }
+  return result;
 }
 
 

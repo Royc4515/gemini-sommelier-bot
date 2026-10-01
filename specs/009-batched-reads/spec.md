@@ -1,7 +1,7 @@
 # Feature 009 - One Apps Script read per message
 
 **Status:** approved (owner, 2026-10-01: "כן, מאשר עם ניסיון חוזר אחד" ("yes,
-approved with one retry")); AC 9 proposed 2026-10-01, awaiting approval
+approved with one retry")); AC 9 approved with the plan, 2026-10-01
 **Author/date:** Claude / 2026-10-01
 
 ## Why
@@ -80,8 +80,8 @@ removes the burst. It also pays the Apps Script per-call overhead (about
    - TTL expiry from the bundle;
    - a write within the request staying visible to a later read.
 
-9. **A failed memory read never erases the conversation** (proposed
-   2026-10-01, found while planning).
+9. **A failed memory read never erases the conversation** (found while planning,
+   approved 2026-10-01).
    - Today, when the memory read fails, the answer is saved on top of an empty
      history. That overwrites the stored conversation and its long-term
      summary with just the new turn.
