@@ -8,9 +8,15 @@ Layer 1 — active_history: Full message log for the current session.
 Layer 2 — long_term_summary: AI-compressed summary that survives across sessions.
 """
 
+import sys
 import time
 
 from apps_script_client import AppsScriptClient
+import request_reads
+
+
+class MemoryUnavailable(Exception):
+    """This request already knows the memory can't be read (the bundle failed)."""
 
 
 class ChatMemory:
@@ -46,11 +52,13 @@ class ChatMemory:
     # Public API
     # ------------------------------------------------------------------
 
-    def get_context(self, chat_id: str) -> tuple[list[dict], str]:
-        """Return (active_history, long_term_summary) for *chat_id*.
+    def get_context(self, chat_id: str) -> tuple[list[dict], str] | None:
+        """Return (active_history, long_term_summary) for *chat_id*, or None.
 
-        If the session has expired, the active history is summarised into the
-        long-term summary before being cleared.
+        None means the history couldn't be read: answer without it, and don't
+        save the turn on top of it (spec 009 AC 9; save_turn(history=None)
+        re-reads first). If the session has expired, the active history is
+        summarised into the long-term summary before being cleared.
         """
         if not self._api.configured:
             return [], ""
@@ -58,9 +66,9 @@ class ChatMemory:
         try:
             doc = self._fetch_document(chat_id)
         except Exception:
-            return [], ""
+            return None
         if not isinstance(doc, dict):
-            return [], ""
+            return None
 
         active_history = doc.get("active_history") or []
         if not isinstance(active_history, list):
@@ -98,18 +106,26 @@ class ChatMemory:
 
         When *history* and *long_term_summary* are supplied (e.g. from a
         ``get_context`` call earlier in the same request), the read is skipped —
-        saving a webhook round trip. Otherwise the document is fetched first.
+        saving a webhook round trip. Otherwise the document is fetched first,
+        and if it can't be read the turn is dropped: writing it over an unread
+        history would erase the whole conversation (spec 009 AC 9).
         """
         if not self._api.configured:
             return
 
         if history is None or long_term_summary is None:
             try:
-                doc = self._fetch_document(chat_id)
-            except Exception:
-                doc = {}
-            history = doc.get("active_history", [])
-            long_term_summary = doc.get("long_term_summary", "")
+                # fresh: the user already has the reply, so one direct call is
+                # fine even when the bundle said memory was unavailable.
+                doc = self._fetch_document(chat_id, fresh=True)
+                if not isinstance(doc, dict):
+                    raise ValueError("memory document is not a mapping")
+            except Exception as exc:
+                sys.stderr.write(f"ERROR: memory unreadable, turn not saved: "
+                                 f"{type(exc).__name__}: {exc}\n")
+                return
+            history = doc.get("active_history") or []
+            long_term_summary = doc.get("long_term_summary") or ""
 
         now = time.time()
         history = list(history)
@@ -190,18 +206,33 @@ class ChatMemory:
     # Private: Webhook Communication
     # ------------------------------------------------------------------
 
-    def _fetch_document(self, chat_id: str) -> dict:
-        """GET history from the Apps Script webhook."""
-        return self._api.get_json({"chat_id": chat_id})
+    def _fetch_document(self, chat_id: str, fresh: bool = False) -> dict:
+        """GET history from the Apps Script webhook, or this request's bundle.
+
+        Raises MemoryUnavailable when the bundle (spec 009) already failed to
+        read it, so the reply path degrades instead of calling again; *fresh*
+        skips that and reads directly.
+        """
+        status, doc = request_reads.lookup_memory(str(chat_id))
+        if status == request_reads.HIT:
+            return doc
+        if status == request_reads.FAILED and not fresh:
+            raise MemoryUnavailable(chat_id)
+        doc = self._api.get_json({"chat_id": chat_id})
+        if isinstance(doc, dict):
+            request_reads.store_memory(str(chat_id), doc)
+        return doc
 
     def _write_document(self, chat_id: str, data: dict) -> None:
         """POST updated history to the Apps Script webhook (secret added by the client)."""
-        self._api.post_json({
-            "chat_id": chat_id,
+        document = {
             "active_history": data.get("active_history", []),
             "long_term_summary": data.get("long_term_summary", ""),
             "updated_at": data.get("updated_at", time.time()),
-        })
+        }
+        self._api.post_json({"chat_id": chat_id, **document})
+        # A later read in this request sees what was just written.
+        request_reads.store_memory(str(chat_id), document)
 
 
 def _history_to_text(history: list[dict]) -> str:

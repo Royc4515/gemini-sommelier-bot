@@ -37,6 +37,22 @@ os.environ["GEMINI_API_KEY"] = "fake-gemini-key"
 os.environ["WINE_CSV_URL"] = "https://fake/wines.csv"
 
 
+_legacy_reads = None
+
+
+def setUpModule():
+    # These tests pin the webhook's routing and its spec 007 concurrency on the
+    # per-item reads, i.e. an Apps Script without the spec 009 bundle (which
+    # the bot falls back to). The bundle path has its own tests below.
+    global _legacy_reads
+    _legacy_reads = patch("cellar.CellarBackend.read_bundle", return_value=None)
+    _legacy_reads.start()
+
+
+def tearDownModule():
+    _legacy_reads.stop()
+
+
 def _make_environ(
     method: str = "POST",
     body: dict | None = None,
@@ -580,6 +596,69 @@ class TestWebhookConcurrency(unittest.TestCase):
         self.assertEqual(sorted(calls), sorted(["999", "edit:999", "status:999", "delete:999"]))
         self.assertEqual(self._sent(mocks["telegram_client.TelegramClient.send_message"]),
                          ["answer"])
+
+
+
+class TestWebhookBundle(unittest.TestCase):
+    """Spec 009: with a current Apps Script, one read serves the whole message."""
+
+    _CHAT = {"intent": "chat", "wine_row": 0, "status": "", "details": ""}
+    _HISTORY = [{"role": "user", "text": "מה פתחנו אתמול?", "ts": 1}]
+
+    def _bundle(self):
+        import time
+        return {"bundle": 1,
+                "states": {"ok": {}},   # every key absent -> no active flow
+                "memory": {"ok": {"active_history": self._HISTORY,
+                                  "long_term_summary": "אוהב ריוחה",
+                                  "updated_at": time.time()}},
+                "wines": {"ok": [{"row": 2, "values": ["Flam"], "status": "Closed"}]}}
+
+    def test_a_question_makes_one_apps_script_read(self):
+        import contextlib
+        env = _make_environ(body={"message": {"text": "מה לשתות עם דג?", "chat": {"id": 999}}})
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,
+                                           {"SHEETS_MEMORY_URL": "https://example.test/exec"}))
+            bundle = stack.enter_context(patch("cellar.CellarBackend.read_bundle",
+                                               return_value=self._bundle()))
+            other_reads = stack.enter_context(patch(
+                "apps_script_client.AppsScriptClient.get_json",
+                side_effect=AssertionError("a reader called Apps Script itself")))
+            stack.enter_context(patch("wine_inventory.WineInventory.get_formatted_inventory",
+                                      return_value="inv"))
+            parse = stack.enter_context(patch("sommelier_ai.SommelierAI.parse_request",
+                                              return_value=self._CHAT))
+            ask = stack.enter_context(patch("sommelier_ai.SommelierAI.ask",
+                                            return_value="answer"))
+            save = stack.enter_context(patch("chat_memory.ChatMemory.save_turn"))
+            send = stack.enter_context(patch("telegram_client.TelegramClient.send_message"))
+            stack.enter_context(patch("telegram_client.TelegramClient.send_chat_action"))
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        bundle.assert_called_once()
+        keys, chat_id = bundle.call_args.args
+        self.assertEqual(sorted(keys), sorted(["999", "edit:999", "status:999",
+                                               "delete:999", "orch:999"]))
+        other_reads.assert_not_called()
+        # The orchestrator saw the bundle's cellar list, the answer its memory.
+        self.assertEqual(parse.call_args.args[1][0]["row"], 2)
+        self.assertEqual(ask.call_args.kwargs["history"], self._HISTORY)
+        self.assertEqual(ask.call_args.kwargs["long_term_summary"], "אוהב ריוחה")
+        self.assertEqual(save.call_args.kwargs["history"], self._HISTORY)
+        self.assertEqual(send.call_args.kwargs.get("text"), "answer")
+
+    def test_a_button_tap_reads_once_inline(self):
+        cb = {"id": "cq1", "data": "status:pick:2",
+              "message": {"chat": {"id": 999}, "message_id": 5}}
+        with patch("cellar.prefetch_reads") as prefetch, \
+             patch("statuswine.StatusWine.handle_callback", return_value=True):
+            status, _ = _call_app(_make_environ(body={"callback_query": cb}))
+        self.assertEqual(status, "200 OK")
+        pool, chat_id, keys = prefetch.call_args.args
+        self.assertIsNone(pool)                     # inline: a tap has no pool
+        self.assertEqual(chat_id, "999")
+        self.assertIn("orch:999", keys)
 
 
 if __name__ == "__main__":

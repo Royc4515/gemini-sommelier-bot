@@ -53,7 +53,8 @@ class ChatDraft:
         self._answer = timing.run_in(self._pool, self._ask, text)
 
     def _ask(self, text: str) -> str:
-        history, long_term_summary = self._context.result()
+        # An unreadable history (None) is answered without context, not refused.
+        history, long_term_summary = self._context.result() or ([], "")
         return SommelierAI().ask(
             user_message=text,
             inventory_context=self._inventory.result(),
@@ -85,8 +86,11 @@ class ChatDraft:
             return
         timing.mark("reply_at")
         try:
-            history, long_term_summary = self._context.result()
-            # Pass the context read above so save_turn skips a round trip.
+            context = self._context.result()
+            # Pass the context read above so save_turn skips a round trip. If it
+            # couldn't be read, pass None: save_turn re-reads rather than write
+            # the turn over an empty history (spec 009 AC 9).
+            history, long_term_summary = context if context is not None else (None, None)
             self._memory.save_turn(
                 str(self.chat_id), self._text, answer,
                 history=history, long_term_summary=long_term_summary,

@@ -71,6 +71,8 @@ Editing goes through the **same Apps Script Web App** as `/addwine` (`action="up
 
 > **Write mechanism / no second auth path.** The bot reads the cellar via a public CSV export URL and has no writable Google client. Writes (and the `/addwine` conversation state) go through the **same Apps Script Web App** already used for chat memory (`SHEETS_MEMORY_URL`), which executes as the sheet owner. After editing `apps_script.js`, paste it into the bound script (Extensions → Apps Script), confirm `CELLAR_FILE_ID`, and **redeploy the existing Web App version** so the URL stays the same.
 >
+> **One read per message (spec 009).** Each incoming message reads everything it may need (flow states, memory, cellar list) with a single `action="bundle"` GET, because six parallel calls per message were rejected by Apps Script together. Until the script with `bundle` is redeployed, the bot detects the older script and falls back to the per-item reads, so either deploy order is safe.
+>
 > **Column O edge case.** If column O holds per-row `=G*H` formulas, a newly appended row leaves O blank. Convert O to a single `ARRAYFORMULA` at the header so new rows auto-compute.
 
 ---

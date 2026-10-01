@@ -85,6 +85,17 @@ def stage(name: str):
     timer.add(name, time.perf_counter() - t0)
 
 
+def fail(name: str) -> None:
+    """Record *name* as failed with no time of its own.
+
+    For a part that failed inside a call that succeeded (one piece of the spec
+    009 bundle), so the TIMING line still shows what was lost.
+    """
+    timer = _current.get()
+    if timer is not None:
+        timer.add(f"{name}(fail)", 0.0)
+
+
 def mark(name: str) -> None:
     """Record *name* at the time since the request started, not a duration.
 

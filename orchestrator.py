@@ -249,8 +249,11 @@ class Orchestrator:
     # ---- helpers ----------------------------------------------------------
 
     @staticmethod
-    def _key(chat_id: str) -> str:
+    def state_key(chat_id: str) -> str:
+        """The KV key of a pending confirm, like each flow's state_key (spec 009)."""
         return f"orch:{chat_id}"
+
+    _key = state_key
 
     @staticmethod
     def _resolve(wine_row, wines: list) -> dict | None:
