@@ -19,6 +19,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
+import dry_run
+
 _current: contextvars.ContextVar = contextvars.ContextVar("request_timer", default=None)
 
 
@@ -99,7 +101,11 @@ def finish(token: contextvars.Token | None = None) -> None:
     try:
         timer = _current.get()
         if timer is not None:
-            print(timer.line(), flush=True)
+            line = timer.line()
+            print(line, flush=True)
+            capture = dry_run.current()
+            if capture is not None:  # the live smoke test reads it back (spec 008)
+                capture.record_timing(line)
     except Exception:
         pass
     finally:

@@ -32,6 +32,7 @@ from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
 from wine_inventory import WineInventory  # noqa: E402
+import dry_run                            # noqa: E402
 import timing                             # noqa: E402
 
 
@@ -52,7 +53,7 @@ _MAX_VOICE_BYTES = 20 * 1024 * 1024
 def _handle_callback_query(callback: dict, allowed_user_id: str) -> tuple[str, str]:
     """Route an inline-button tap to the flow that owns it. Always terminal."""
     cb_chat_id = callback.get("message", {}).get("chat", {}).get("id")
-    if allowed_user_id and str(cb_chat_id) != allowed_user_id:
+    if allowed_user_id and str(cb_chat_id) != allowed_user_id and not dry_run.allows(cb_chat_id):
         return ("200 OK", "OK — unauthorized user")
     claimed = False
     try:
@@ -294,7 +295,9 @@ def _route_update(environ, _respond):
 
     # --- Authorization: restrict to allowed user ---
     chat_id = message["chat"]["id"]
-    if allowed_user_id and str(chat_id) != allowed_user_id:
+    # The smoke test's synthetic chat passes only while the in-process runner
+    # is capturing (spec 008); nothing in an update can turn that on.
+    if allowed_user_id and str(chat_id) != allowed_user_id and not dry_run.allows(chat_id):
         try:
             TelegramClient().send_message(
                 chat_id=chat_id,

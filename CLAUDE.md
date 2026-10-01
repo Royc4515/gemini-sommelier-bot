@@ -10,6 +10,7 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 - `orchestrator.py` - free-text intent router (set_status / delete / add / edit / chat).
 - `addwine.py`, `editwine.py`, `statuswine.py`, `deletewine.py` - stateful write flows; `cellar_picker.py` shared bottle picker.
 - `cellar.py` (facade), `cellar_model.py` (A-N column model), `cellar_fill.py` (`key: value` parser), `apps_script_client.py` (the one HTTP/secret transport).
+- `smoke_runner.py` + `api/smoke.py` - automated live smoke test (spec 008): runs 8 fixed cases through the real webhook in-process as chat `smoke`, Telegram captured by `dry_run.py`, verdict sent to the owner. Fixture in `smoke_fixtures/`.
 - `wine_inventory.py` - read path via public CSV export. `chat_memory.py` - 2-layer memory (30 active messages + summary).
 - `apps_script.js` - Google Apps Script Web App that performs every sheet write and holds flow state. Deployed by hand, not by Vercel.
 - `specs/` - spec-driven workflow: `constitution.md`, one folder per feature (spec/plan/tasks).
@@ -17,12 +18,13 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 
 ## Commands
 - Install: `pip install -r requirements.txt` (verified, in a venv).
-- Unit tests: `python -m unittest discover -s tests` (verified: 231 tests OK, run on Python 3.11 locally; CI uses 3.12).
+- Unit tests: `python -m unittest discover -s tests` (verified: 244 tests OK, run on Python 3.11 locally; CI uses 3.12).
 - Smoke: `python selftest_overhaul.py` (verified: 21 passed). CI runs both on push/PR to `main` (`.github/workflows/tests.yml`).
 - Live Apps Script contract check: `SHEETS_MEMORY_URL=... SHEETS_SECRET=... python smoke_editwine.py [--write-test]` (unverified; hits the real sheet).
 - Register the `/` menu after changing commands: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified).
-- Deploy: Vercel from the repo (`vercel.json`, route `/api/webhook` -> `api/index.py`, `maxDuration` 120; Hobby + Fluid compute allows up to 300). No build step.
-- Env vars: see README "Environment Variables". Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `GEMINI_API_KEY`, `WINE_CSV_URL`.
+- Deploy: Vercel from the repo (`vercel.json`, route `/api/webhook` -> `api/index.py`, `maxDuration` 120; `/api/smoke` -> `api/smoke.py`, 300; Hobby + Fluid compute allows up to 300). No build step.
+- Live smoke: `curl -H "Authorization: Bearer $CRON_SECRET" https://<prod>/api/smoke?source=deploy` (runs real Gemini/Apps Script, about 11 model calls; never writes the cellar). Vercel Cron runs it daily at `0 6 * * *` UTC = 09:00 Israel summer, 08:00 winter; Hobby fires within the hour.
+- Env vars: see README "Environment Variables". Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `GEMINI_API_KEY`, `WINE_CSV_URL`; `CRON_SECRET` for `/api/smoke` (fails closed without it).
 
 ## Conventions (Roy's standing rules)
 - Comments explain WHY, not what.
@@ -49,6 +51,7 @@ Changing the order, codes, retry counts or error classification requires a test 
 - `apps_script.js` changes do nothing until pasted into the bound script and the EXISTING Web App version is redeployed (keeps the URL).
 - `apps_script.js` `_authorized` fails OPEN when `BOT_SECRET` is unset; `SHEETS_SECRET` and `BOT_SECRET` must both be set.
 - The webhook fails CLOSED if `TELEGRAM_SECRET_TOKEN` is unset (401). If `ALLOWED_USER_ID` is unset the bot answers anyone.
+- The smoke chat (`smoke`) passes the `ALLOWED_USER_ID` gate only via `dry_run.allows`, i.e. only while the in-process runner holds a capture ContextVar. Never let an HTTP input set that ContextVar.
 - Every invocation is a cold start; flow state lives in the Apps Script KV store keyed by chat_id, never in module globals.
 - `tests/test_addwine.py` imports `_parse_wine_json` from `sommelier_ai`; keep that re-export.
 - `build_plan` is the original prompt and is stale (gemini-2.5-flash, `api/webhook.py`, BaseHTTPRequestHandler). Trust the code and `specs/`.

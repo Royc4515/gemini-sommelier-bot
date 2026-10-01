@@ -1,15 +1,29 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/**/*.py": {
+    "api/index.py": {
       "maxDuration": 120,
+      "excludeFiles": "{tests/**,specs/**,assets/**,.github/**}"
+    },
+    "api/smoke.py": {
+      "maxDuration": 300,
       "excludeFiles": "{tests/**,specs/**,assets/**,.github/**}"
     }
   },
+  "crons": [
+    {
+      "path": "/api/smoke",
+      "schedule": "0 6 * * *"
+    }
+  ],
   "routes": [
     {
       "src": "/api/webhook",
       "dest": "/api/index.py"
+    },
+    {
+      "src": "/api/smoke",
+      "dest": "/api/smoke.py"
     }
   ]
 }
