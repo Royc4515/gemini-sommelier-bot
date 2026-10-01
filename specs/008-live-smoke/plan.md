@@ -52,6 +52,17 @@ from the single `app` in `api/index.py`, so `/api/smoke` reached the webhook and
 got its 405. The endpoint now lives in `smoke_runner.py` and the webhook app
 dispatches to it by path (`PATH_INFO`, or the original URI after a rewrite).
 
+## Only after a change (AC 8, amended 2026-10-01)
+- `endpoint` reads `VERCEL_DEPLOYMENT_ID`, a Vercel system env var available at
+  runtime that changes on every deploy and redeploy.
+- On a cron call it compares the id with the KV record `smoke:tested_deployment`.
+  It reads that record through `CellarBackend.peek_state`, because `get_state`
+  applies the 30 min flow TTL and would expire the record.
+- A match returns `{"skipped": true}` with no run and no message.
+- After any finished run, the id is written with `set_state`.
+- A failed read means "not tested", so the run goes ahead. A failed write is
+  logged, and the next cron call runs again: one duplicate message at worst.
+
 ## Judging (AC 5-6)
 Parse the last TIMING line with `(\S+)=(\d+\.\d+)`.
 - A stage name ending `(fail)` is a fault.

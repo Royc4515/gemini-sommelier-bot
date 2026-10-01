@@ -164,6 +164,16 @@ class CellarBackend:
             return None
         return state
 
+    def peek_state(self, key: str) -> dict | None:
+        """The value stored under *key*, with no flow TTL. Raises if it can't be read.
+
+        For bookkeeping that must outlive a flow's 30 min TTL (the smoke test's
+        last tested deployment, spec 008 AC 8). Unlike get_state it raises on a
+        failed read, so the caller can tell "nothing stored" from "couldn't read".
+        """
+        doc = self._api.get_json({"action": "addwine_state", "chat_id": key})
+        return doc.get("state") or None
+
     def set_state(self, chat_id: str, state: dict) -> None:
         self._api.post_json({"action": "addwine_state", "chat_id": chat_id,
                              "state": state, "updated_at": time.time()})

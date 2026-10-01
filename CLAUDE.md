@@ -18,12 +18,12 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 
 ## Commands
 - Install: `pip install -r requirements.txt` (verified, in a venv).
-- Unit tests: `python -m unittest discover -s tests` (verified: 246 tests OK, run on Python 3.11 locally; CI uses 3.12).
+- Unit tests: `python -m unittest discover -s tests` (verified: 251 tests OK, run on Python 3.11 locally; CI uses 3.12).
 - Smoke: `python selftest_overhaul.py` (verified: 21 passed). CI runs both on push/PR to `main` (`.github/workflows/tests.yml`).
 - Live Apps Script contract check: `SHEETS_MEMORY_URL=... SHEETS_SECRET=... python smoke_editwine.py [--write-test]` (unverified; hits the real sheet).
 - Register the `/` menu after changing commands: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified).
 - Deploy: Vercel from the repo (`vercel.json`, routes `/api/webhook` and `/api/smoke` -> `api/index.py`, `maxDuration` 300, the Hobby + Fluid max, needed by the smoke run). No build step. The project uses Vercel's `python` preset: the one `app` in `api/index.py` serves every path, so a second file under `api/` never becomes its own function. Add endpoints by dispatching inside `application`.
-- Live smoke: `curl -H "Authorization: Bearer $CRON_SECRET" https://<prod>/api/smoke?source=deploy` (runs real Gemini/Apps Script, about 11 model calls; never writes the cellar). Vercel Cron runs it daily at `0 6 * * *` UTC = 09:00 Israel summer, 08:00 winter; Hobby fires within the hour.
+- Live smoke: `curl -H "Authorization: Bearer $CRON_SECRET" https://<prod>/api/smoke?source=deploy` (runs real Gemini/Apps Script, about 11 model calls; never writes the cellar). Runs only after a change (owner's rule): run `?source=deploy` yourself after every production deploy and after any `apps_script.js` redeploy. A daily Vercel Cron check (`0 6 * * *` UTC) runs it only if the live `VERCEL_DEPLOYMENT_ID` has no finished run on record (KV key `smoke:tested_deployment`), so a day with no change sends nothing.
 - Env vars: see README "Environment Variables". Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `GEMINI_API_KEY`, `WINE_CSV_URL`; `CRON_SECRET` for `/api/smoke` (fails closed without it).
 
 ## Conventions (Roy's standing rules)

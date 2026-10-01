@@ -215,7 +215,7 @@ class EndpointTests(unittest.TestCase):
     def test_right_token_runs_against_the_webhook_and_notifies(self):
         import api.index as idx
         report = {"ok": True, "source": "deploy"}
-        with patch.dict(os.environ, {"CRON_SECRET": "s3"}), \
+        with patch.dict(os.environ, {"CRON_SECRET": "s3", "VERCEL_DEPLOYMENT_ID": ""}), \
              patch("smoke_runner.run", return_value=report) as mock_run, \
              patch("smoke_runner.notify") as mock_notify:
             status, body = self._call(auth="Bearer s3", query="source=deploy")
@@ -224,6 +224,58 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(mock_run.call_args.kwargs["source"], "deploy")
         mock_notify.assert_called_once_with(report)
         self.assertEqual(json.loads(body), report)
+
+    def _cron(self, deployment="dpl_new", stored=None, read_error=None, query=""):
+        """A cron call (no ?source) with the KV record faked; returns the mocks."""
+        env = {"CRON_SECRET": "s3", "VERCEL_DEPLOYMENT_ID": deployment}
+        peek = {"side_effect": read_error} if read_error else {"return_value": stored}
+        report = {"ok": True, "source": "cron"}
+        with patch.dict(os.environ, env), \
+             patch("cellar.CellarBackend.peek_state", **peek), \
+             patch("cellar.CellarBackend.set_state") as mock_set, \
+             patch("smoke_runner.run", return_value=report) as mock_run, \
+             patch("smoke_runner.notify") as mock_notify, \
+             contextlib.redirect_stderr(io.StringIO()):
+            status, body = self._call(auth="Bearer s3", query=query)
+        self.assertTrue(status.startswith("200"))
+        return json.loads(body), mock_run, mock_notify, mock_set
+
+    def test_cron_skips_a_deployment_already_tested(self):
+        body, mock_run, mock_notify, mock_set = self._cron(
+            stored={"deployment": "dpl_new"})
+        self.assertEqual(body, {"source": "cron", "skipped": True, "deployment": "dpl_new"})
+        mock_run.assert_not_called()
+        mock_notify.assert_not_called()   # no message on a day nothing changed
+        mock_set.assert_not_called()
+
+    def test_cron_tests_a_new_deployment_and_records_it(self):
+        body, mock_run, mock_notify, mock_set = self._cron(
+            stored={"deployment": "dpl_old"})
+        self.assertEqual(mock_run.call_args.kwargs["source"], "cron")
+        mock_notify.assert_called_once()
+        self.assertEqual(body["deployment"], "dpl_new")
+        key, value = mock_set.call_args.args
+        self.assertEqual(key, "smoke:tested_deployment")
+        self.assertEqual(value["deployment"], "dpl_new")
+
+    def test_deploy_call_runs_even_if_already_tested(self):
+        _, mock_run, mock_notify, _ = self._cron(
+            stored={"deployment": "dpl_new"}, query="source=deploy")
+        self.assertEqual(mock_run.call_args.kwargs["source"], "deploy")
+        mock_notify.assert_called_once()
+
+    def test_uncertainty_runs_rather_than_stays_silent(self):
+        _, mock_run, _, _ = self._cron(read_error=OSError("apps script down"))
+        mock_run.assert_called_once()
+        _, mock_run, _, mock_set = self._cron(deployment="", stored={"deployment": ""})
+        mock_run.assert_called_once()
+        mock_set.assert_not_called()      # nothing to record without an id
+
+    def test_peek_state_ignores_the_flow_ttl(self):
+        from cellar import CellarBackend
+        stale = {"state": {"deployment": "dpl_x"}, "updated_at": 0}
+        with patch("apps_script_client.AppsScriptClient.get_json", return_value=stale):
+            self.assertEqual(CellarBackend().peek_state("k"), {"deployment": "dpl_x"})
 
     def test_webhook_path_is_untouched(self):
         with patch("smoke_runner.endpoint") as mock_endpoint:
