@@ -7,9 +7,11 @@ cancelled with /cancel. Apps Script, Gemini and the cellar CSV are the real ones
 only Telegram is captured (dry_run). Each request's TIMING line is checked, and a
 one-line verdict goes to the owner on Telegram.
 
-Run by api/smoke.py: daily from Vercel Cron, and on demand after a deploy.
+Served by the webhook's own app at /api/smoke (see endpoint()): daily from
+Vercel Cron, and on demand after a deploy with ?source=deploy.
 """
 
+import hmac
 import io
 import json
 import os
@@ -17,6 +19,7 @@ import re
 import statistics
 import sys
 import time
+from urllib.parse import parse_qs
 
 import dry_run
 from cellar import CellarBackend
@@ -51,6 +54,56 @@ class Case:
         self.name = name
         self.message = message
         self.question = question
+
+
+SMOKE_PATH = "/api/smoke"
+
+
+def is_smoke_request(environ) -> bool:
+    """True when the request was addressed to /api/smoke.
+
+    The project builds as Vercel's Python preset, which serves every path from
+    the one `app` in api/index.py; a second file under api/ never becomes its own
+    function (the first deploy of spec 008 proved it). So the webhook app routes
+    this path itself. A rewrite may leave PATH_INFO as the destination, so the
+    original URI is checked too.
+    """
+    for key in ("PATH_INFO", "RAW_URI", "REQUEST_URI"):
+        path = environ.get(key, "").split("?", 1)[0].rstrip("/")
+        if path == SMOKE_PATH:
+            return True
+    return False
+
+
+def endpoint(environ, start_response, webhook):
+    """WSGI handler for /api/smoke: auth, run against *webhook*, notify, report.
+
+    Fails closed: without CRON_SECRET nothing runs (each run costs ~11 model
+    calls). Vercel Cron sends exactly ``Authorization: Bearer $CRON_SECRET``.
+    """
+    def _respond(status: str, body: dict):
+        start_response(status, [("Content-Type", "application/json; charset=utf-8")])
+        return [json.dumps(body, ensure_ascii=False).encode("utf-8")]
+
+    if environ.get("REQUEST_METHOD") not in ("GET", "POST"):
+        return _respond("405 Method Not Allowed", {"error": "method not allowed"})
+    if not _authorized(environ):
+        return _respond("401 Unauthorized", {"error": "unauthorized"})
+
+    query = parse_qs(environ.get("QUERY_STRING", ""))
+    source = "deploy" if query.get("source", [""])[0] == "deploy" else "daily"
+    report = run(webhook, source=source)
+    notify(report)
+    return _respond("200 OK", report)
+
+
+def _authorized(environ) -> bool:
+    secret = os.environ.get("CRON_SECRET", "")
+    if not secret:
+        sys.stderr.write("ERROR: CRON_SECRET is not set; refusing to run the smoke test.\n")
+        return False
+    provided = environ.get("HTTP_AUTHORIZATION", "")
+    return hmac.compare_digest(provided.encode(), f"Bearer {secret}".encode())
 
 
 def cases() -> list[Case]:
