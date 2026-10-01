@@ -57,6 +57,38 @@ Expected after phase 2 on these numbers: reads overlap (about 7-10 s), then the
 intent parse and the answer overlap (about 18 s), so the reply lands at about
 26-28 s instead of 54 s.
 
+### After phase 2 (T11, production `5c24512`, 2026-10-01 10:35 UTC)
+Measured by the automated smoke run (spec 008): 5 plain questions, a photo and
+`/status` + `/cancel`, against real Gemini and Apps Script. Seconds:
+
+| Case | reply_at | Total | Notes |
+|---|---|---|---|
+| Question 1 | 24.5 | 26.4 | `state:delete` read failed at 21.5 |
+| Question 2 | 11.8 | 14.2 | clean; memory read 9.9 |
+| Question 3 | 5.5 | 16.8 | clean; memory write 11.3, after the reply |
+| Question 4 | 20.2 | 22.1 | **all 6 Apps Script reads failed together at 15-16.7** |
+| Question 5 | 17.2 | 23.7 | `state:addwine` read failed at 15.0 |
+| Photo | - | 11.1 | clean |
+| /status | - | 5.2 | clean |
+| /cancel | - | 4.3 | clean |
+
+Every model call succeeded on the primary model in 0.5-3.5 s. Neither model
+calls nor Python code are the bottleneck any more: Apps Script is.
+
+**AC 6 verdict: met.** The median reply is 17.2 s against the 54.3 s baseline,
+68% lower (the target was 40%, at most 32 s). The slowest request took 26.4 s,
+under the 45 s cap. No voice note was in the run (spec 008 non-goal).
+
+**AC 11 verdict: partly met.** Memory is back: the read succeeded in 4 of 5
+questions, against 0 before the fix. But Apps Script still stalls past the
+15 s timeout. 3 of the 5 questions lost at least one read, and question 4 lost
+all six at once. Each loss degrades as AC 8 says (no flow, empty memory), so
+every reply still went out. Still, a lost flow-state read routes a message
+sent inside a flow as a plain question. The six reads all failing at the same
+moment points at Apps Script handling a burst of concurrent calls (6 per
+message), not at any single slow read. A follow-up feature should cut those
+six calls to one.
+
 ## User stories
 - As the owner, when I ask a question, the answer arrives noticeably sooner.
 - As the owner, while the bot works I keep seeing "typing…" until the reply
