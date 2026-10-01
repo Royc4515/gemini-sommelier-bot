@@ -1,0 +1,199 @@
+"""
+smoke_runner.py — the automated live smoke test (spec 008).
+
+Drives the real webhook in-process with a fixed set of messages from a synthetic
+chat (dry_run.SMOKE_CHAT_ID): five questions, a label photo, and a /status flow
+cancelled with /cancel. Apps Script, Gemini and the cellar CSV are the real ones;
+only Telegram is captured (dry_run). Each request's TIMING line is checked, and a
+one-line verdict goes to the owner on Telegram.
+
+Run by api/smoke.py: daily from Vercel Cron, and on demand after a deploy.
+"""
+
+import io
+import json
+import os
+import re
+import statistics
+import sys
+import time
+
+import dry_run
+from cellar import CellarBackend
+from chat_memory import ChatMemory
+from statuswine import StatusWine
+from telegram_client import TelegramClient
+
+
+TARGET_MEDIAN_S = 32.0   # spec 007 AC 6: median time to a chat reply
+MAX_REQUEST_S = 45.0     # spec 007 AC 6: no single request above this
+# Stop starting new cases past this point so the run reports instead of being
+# killed by the function's 300 s limit.
+_BUDGET_S = 240.0
+
+_PHOTO_ID = "smoke-label"
+_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "smoke_fixtures", "label.jpg")
+
+QUESTIONS = (
+    "מה לפתוח הערב עם סטייק אנטריקוט?",
+    "איזה יין מהמרתף מתאים לפסטה ברוטב עגבניות?",
+    "מה ההבדל בין סירה לגרנאש?",
+    "יש לי במרתף משהו שכדאי לשתות כבר השנה?",
+    "מה להגיש עם סלמון בתנור?",
+)
+
+_ERROR_PREFIX = "⚠️"   # the bot's generic error replies start with it
+_STAGE = re.compile(r"(\S+)=(\d+\.\d+)")
+
+
+class Case:
+    def __init__(self, name: str, message: dict, question: bool = False):
+        self.name = name
+        self.message = message
+        self.question = question
+
+
+def cases() -> list[Case]:
+    chat = {"id": dry_run.SMOKE_CHAT_ID}
+    out = [Case(f"שאלה {i}", {"text": q, "chat": chat}, question=True)
+           for i, q in enumerate(QUESTIONS, start=1)]
+    out.append(Case("תמונה", {"photo": [{"file_id": _PHOTO_ID}], "caption": "", "chat": chat}))
+    out.append(Case("/status", {"text": "/status", "chat": chat}))
+    out.append(Case("/cancel", {"text": "/cancel", "chat": chat}))
+    return out
+
+
+def run(webhook, source: str = "daily") -> dict:
+    """Run every case through *webhook* (a WSGI app); return a JSON-able report."""
+    _reset_smoke_chat()
+    with open(_FIXTURE, "rb") as fh:
+        files = {_PHOTO_ID: fh.read()}
+
+    started = time.perf_counter()
+    results = []
+    for case in cases():
+        if time.perf_counter() - started > _BUDGET_S:
+            results.append({"name": case.name, "ok": False, "problems": ["דולג: נגמר הזמן"]})
+            continue
+        with dry_run.capturing(files) as capture:
+            t0 = time.perf_counter()
+            try:
+                status = _post(webhook, case.message)
+            except Exception as exc:  # a crash is a finding, not an abort
+                status = f"crash: {exc}"
+            seconds = time.perf_counter() - t0
+        results.append(evaluate(case, status, capture, seconds))
+
+    replies = [r["reply_s"] for r in results if r.get("question") and r.get("reply_s") is not None]
+    median = round(statistics.median(replies), 1) if replies else None
+    memory_ok = not any("as:get:memory" in p for r in results for p in r.get("failed_stages", []))
+    passed = sum(1 for r in results if r["ok"])
+    return {
+        "source": source,
+        "passed": passed,
+        "total": len(results),
+        "median_reply_s": median,
+        "memory_ok": memory_ok,
+        "ok": passed == len(results) and median is not None and median <= TARGET_MEDIAN_S,
+        "results": results,
+    }
+
+
+def evaluate(case: Case, status: str, capture: dry_run.Capture, seconds: float) -> dict:
+    """Judge one request from its HTTP status, captured replies and TIMING line."""
+    line = capture.timing_lines[-1] if capture.timing_lines else ""
+    stages = _STAGE.findall(line)
+    stage_names = [name for name, _ in stages]
+    # A model attempt that failed over to the next model still answered: note it
+    # (it costs time) but don't fail on it. Any other failed stage is a fault.
+    failed = [n[:-len("(fail)")] for n in stage_names if n.endswith("(fail)")]
+    faults = [n for n in failed if not n.startswith("gemini:")]
+    fallbacks = [n for n in failed if n.startswith("gemini:")]
+    values = dict(stages)
+    reply_s = float(values["reply_at"]) if "reply_at" in values else None
+    request_s = float(values.get("total", seconds))
+
+    problems = []
+    if not str(status).startswith("200"):
+        problems.append(f"HTTP {status}")
+    if not line:
+        problems.append("אין שורת TIMING")
+    for name in faults:
+        problems.append(f"נכשל {name}")
+    if not capture.sent:
+        problems.append("לא נשלחה תשובה")
+    elif any(t.startswith(_ERROR_PREFIX) for t in capture.sent):
+        problems.append("נשלחה הודעת שגיאה")
+    if case.question and reply_s is None and capture.sent:
+        problems.append("חסר reply_at")
+    if request_s > MAX_REQUEST_S:
+        problems.append(f"{request_s:.1f} שנ' (מעל {MAX_REQUEST_S:.0f})")
+
+    return {
+        "name": case.name,
+        "question": case.question,
+        "ok": not problems,
+        "problems": problems,
+        "failed_stages": faults,
+        "model_fallbacks": fallbacks,
+        "reply_s": reply_s,
+        "request_s": round(request_s, 2),
+        "timing": line,
+    }
+
+
+def summary(report: dict) -> str:
+    """One Hebrew line (plus a bullet per failing case) for the owner."""
+    label = "בדיקה יומית" if report["source"] == "daily" else "בדיקה אחרי עדכון"
+    icon = "✅" if report["ok"] else "❌"
+    median = report["median_reply_s"]
+    median_text = f"{median} שנ'" if median is not None else "אין נתון"
+    memory = "זיכרון תקין" if report["memory_ok"] else "הזיכרון לא נקרא"
+    lines = [f"{icon} {label}: {report['passed']}/{report['total']} עברו | "
+             f"חציון תשובה {median_text} (יעד {TARGET_MEDIAN_S:.0f}) | {memory}"]
+    for r in report["results"]:
+        if not r["ok"]:
+            lines.append(f"• {r['name']}: {', '.join(r['problems'])}")
+    return "\n".join(lines)
+
+
+def notify(report: dict) -> None:
+    """Send the verdict to the owner. Never raises: the report is also the HTTP body."""
+    owner = os.environ.get("ALLOWED_USER_ID", "")
+    if not owner:
+        return
+    try:
+        TelegramClient().send_message(chat_id=owner, text=summary(report))
+    except Exception as exc:
+        sys.stderr.write(f"ERROR: smoke notify failed: {exc}\n")
+
+
+def _post(webhook, message: dict) -> str:
+    """Call the webhook exactly as Telegram would; return the HTTP status line."""
+    body = json.dumps({"update_id": 0, "message": message}).encode("utf-8")
+    environ = {
+        "REQUEST_METHOD": "POST",
+        "CONTENT_LENGTH": str(len(body)),
+        "wsgi.input": io.BytesIO(body),
+        "HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN": os.environ.get("TELEGRAM_SECRET_TOKEN", ""),
+    }
+    statuses = []
+    webhook(environ, lambda status, headers: statuses.append(status))
+    return statuses[0] if statuses else "no status"
+
+
+def _reset_smoke_chat() -> None:
+    """Start each run from a clean synthetic chat.
+
+    Memory is cleared so a daily run never grows the smoke chat's summary, and a
+    /status left open by a run that died mid-way can't swallow question 1.
+    """
+    chat_id = dry_run.SMOKE_CHAT_ID
+    try:
+        ChatMemory().clear(chat_id)
+    except Exception:
+        pass
+    try:
+        CellarBackend().clear_state(StatusWine.state_key(chat_id))
+    except Exception:
+        pass

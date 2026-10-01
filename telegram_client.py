@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 
+import dry_run
 import timing
 
 
@@ -93,6 +94,11 @@ class TelegramClient:
         LAST chunk only, so confirmation buttons appear after the full text.
         Returns the parsed JSON response from the last chunk sent.
         """
+        capture = dry_run.current()
+        if capture is not None:  # smoke test: record, don't send (spec 008)
+            capture.record_send(text)
+            return {"ok": True, "result": {"message_id": 0}}
+
         # Split the RAW text (Telegram's limit counts visible characters, not
         # HTML markup), then format each chunk. Keeping the raw chunk around
         # lets the no-parse-mode fallback send readable text instead of the
@@ -145,6 +151,8 @@ class TelegramClient:
 
     def get_file_path(self, file_id: str) -> str:
         """Resolve a Telegram *file_id* to its temporary download path."""
+        if dry_run.current() is not None:
+            return file_id  # fixtures are keyed by the id itself
         req = urllib.request.Request(
             url=f"{self.api_url}/getFile",
             data=json.dumps({"file_id": file_id}).encode("utf-8"),
@@ -162,6 +170,9 @@ class TelegramClient:
         Note: file downloads use the /file/bot<token>/ host, NOT the /bot<token>/
         API host used for method calls.
         """
+        capture = dry_run.current()
+        if capture is not None:
+            return capture.files[file_path]  # a bundled fixture (spec 008)
         url = f"{self.BASE_URL}/file/bot{self.token}/{file_path}"
         with timing.stage("tg:download"):
             with urllib.request.urlopen(url, timeout=self.DOWNLOAD_TIMEOUT_SEC) as response:
@@ -188,6 +199,8 @@ class TelegramClient:
 
         Best-effort: a failed indicator must never block the real work.
         """
+        if dry_run.current() is not None:
+            return {}
         data = {"chat_id": chat_id, "action": action}
         req = urllib.request.Request(
             url=f"{self.api_url}/sendChatAction",
@@ -212,6 +225,11 @@ class TelegramClient:
         the block BEFORE sending the reply: a refresh landing after the message
         would show a phantom "typing…" under it.
         """
+        if dry_run.current() is not None:
+            # The refresher thread wouldn't see the capture (new threads start
+            # with an empty context) and would call Telegram for a fake chat.
+            yield
+            return
         stop = threading.Event()
 
         def _refresh():
@@ -233,6 +251,8 @@ class TelegramClient:
     def set_my_commands(self, commands: list[dict]) -> dict:
         """Register the bot's '/' command menu. *commands* is a list of
         {"command","description"} dicts. Run once (not per request)."""
+        if dry_run.current() is not None:
+            return {}
         data = {"commands": commands}
         req = urllib.request.Request(
             url=f"{self.api_url}/setMyCommands",
@@ -250,6 +270,8 @@ class TelegramClient:
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> dict:
         """Acknowledge a button tap so Telegram stops the loading spinner."""
+        if dry_run.current() is not None:
+            return {}
         data = {"callback_query_id": callback_query_id}
         if text:
             data["text"] = text
@@ -274,6 +296,8 @@ class TelegramClient:
         Used after a confirm/cancel tap so the buttons cannot be tapped again
         (visual half of the idempotency guard; the one-time token is the real one).
         """
+        if dry_run.current() is not None:
+            return {}
         data = {"chat_id": chat_id, "message_id": message_id}
         if reply_markup is not None:
             data["reply_markup"] = reply_markup
