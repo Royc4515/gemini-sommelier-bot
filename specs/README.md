@@ -44,4 +44,4 @@ specs/
 | 006 | Orchestrator (NL router) | approved | approved | approved | code done; live smoke pending |
 | 007 | Faster replies (cut serial round trips) | approved | approved | approved | ✅ live-measured 2026-10-01: median reply 17.2 s vs 54.3 s (AC 6 met); Apps Script read timeouts remain (AC 11 partial) |
 | 008 | Automated live smoke test (/api/smoke + daily cron) | approved | approved | approved | ✅ live 2026-10-01 (first run 5/8, failures are Apps Script timeouts); amended: runs only after a change |
-| 009 | One Apps Script read per message | draft | - | - | awaiting owner approval |
+| 009 | One Apps Script read per message | approved (AC 9 proposed) | draft | - | plan awaiting owner approval |

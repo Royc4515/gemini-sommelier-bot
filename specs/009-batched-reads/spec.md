@@ -1,7 +1,7 @@
 # Feature 009 - One Apps Script read per message
 
-**Status:** draft (owner asked for it 2026-10-01: "כן, תכתוב spec 009 לקריאה
-המאוחדת" ("yes, write spec 009 for the batched read"); awaiting approval)
+**Status:** approved (owner, 2026-10-01: "כן, מאשר עם ניסיון חוזר אחד" ("yes,
+approved with one retry")); AC 9 proposed 2026-10-01, awaiting approval
 **Author/date:** Claude / 2026-10-01
 
 ## Why
@@ -15,6 +15,10 @@ Callbacks and the flows' own pickers add more. The first automated live run
 (spec 008, 2026-10-01) showed this is now the bot's weak point. Gemini answered
 in 0.5-3.5 s every time, but Apps Script reads timed out at 15 s in 3 of 5
 questions, and in one question all six failed at the same moment.
+
+A second run the same day (deployment `94b3681`) made the cause clearer. Four
+reads failed after 4.6-9.4 s, well under the 15 s timeout, so Apps Script
+rejected them rather than answering slowly. A longer timeout would not help.
 
 A lost read is not just slow. A lost flow-state read routes a message sent
 inside `/addwine` as a plain question, and a lost memory read answers without
@@ -76,6 +80,16 @@ removes the burst. It also pays the Apps Script per-call overhead (about
    - TTL expiry from the bundle;
    - a write within the request staying visible to a later read.
 
+9. **A failed memory read never erases the conversation** (proposed
+   2026-10-01, found while planning).
+   - Today, when the memory read fails, the answer is saved on top of an empty
+     history. That overwrites the stored conversation and its long-term
+     summary with just the new turn.
+   - The fix: the new turn is saved only on top of history that was actually
+     read. If the history can't be read even at save time, the turn is
+     skipped and logged.
+   - Losing one turn is better than losing the whole memory.
+
 ## Non-goals
 - Caching anything between requests.
 - Changing writes, the sheet layout, or the 15 s per-call timeout.
@@ -84,7 +98,7 @@ removes the burst. It also pays the Apps Script per-call overhead (about
 - Model calls: already fast and not the bottleneck.
 
 ## Decisions for the owner
-1. **Retry once on a failed read (AC 3)?** Recommended: yes.
+1. **Retry once on a failed read (AC 3).** Decided 2026-10-01: yes.
    - **Pro:** a second try almost always gets the flow state right, and a
      wrong flow state misroutes a message.
    - **Cost:** on a bad Apps Script moment the reply can arrive up to about
