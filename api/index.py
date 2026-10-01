@@ -33,6 +33,7 @@ from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
 from wine_inventory import WineInventory  # noqa: E402
 import dry_run                            # noqa: E402
+import smoke_runner                       # noqa: E402
 import timing                             # noqa: E402
 
 
@@ -225,7 +226,12 @@ def _handle_command(text: str, chat_id) -> tuple[str, str] | None:
 
 
 def application(environ, start_response):
-    """Vercel serverless WSGI handler for the Telegram webhook."""
+    """Vercel serverless WSGI handler for the Telegram webhook (and /api/smoke)."""
+    # don't touch / Vercel's Python preset sends every path to this one app, so
+    # the smoke endpoint (spec 008) is dispatched here; it has its own auth.
+    if smoke_runner.is_smoke_request(environ):
+        return smoke_runner.endpoint(environ, start_response, application)
+
     def _respond(status: str, message: str):
         start_response(status, [("Content-Type", "text/plain")])
         return [message.encode("utf-8")]

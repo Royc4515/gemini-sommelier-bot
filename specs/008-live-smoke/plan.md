@@ -34,16 +34,23 @@ replies sent from worker threads are captured too.
   - `_post` builds a Telegram-shaped WSGI request with the real secret header,
     so the request takes the real auth path;
   - `_reset_smoke_chat` covers AC 10.
-- `api/smoke.py` (new): a WSGI entrypoint.
+- `smoke_runner.endpoint` + `is_smoke_request`, dispatched first thing in
+  `api/index.py:application` (see the deploy note below):
   - `hmac.compare_digest` against `Bearer $CRON_SECRET`, failing closed;
   - `?source=deploy` labels a post-deploy run;
   - runs, notifies, and returns the JSON report.
 - `smoke_fixtures/label.jpg`: a synthetic label. It sits outside `assets/`
   because `assets/**` is excluded from the bundle.
 - `vercel.json`:
-  - the `api/smoke.py` function with `maxDuration` 300;
+  - `api/index.py` `maxDuration` 120 -> 300 so a run fits;
   - the cron `0 6 * * *`;
-  - the route `/api/smoke`.
+  - the route `/api/smoke` -> `api/index.py`.
+
+**Deploy note (2026-10-01).** The first deploy shipped `api/smoke.py` as its own
+file. The project builds with Vercel's `python` preset, which serves every path
+from the single `app` in `api/index.py`, so `/api/smoke` reached the webhook and
+got its 405. The endpoint now lives in `smoke_runner.py` and the webhook app
+dispatches to it by path (`PATH_INFO`, or the original URI after a rewrite).
 
 ## Judging (AC 5-6)
 Parse the last TIMING line with `(\S+)=(\d+\.\d+)`.

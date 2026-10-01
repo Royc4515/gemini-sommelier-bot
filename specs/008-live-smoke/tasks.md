@@ -8,10 +8,11 @@
 - [x] T2. `api/index.py` admits the smoke chat only while capturing. Verifies AC 3.
 - [x] T3. `smoke_runner.py`: cases, run, evaluate, summary and notify, plus
   `smoke_fixtures/label.jpg`. Verifies AC 1, 5, 6, 7, 9 and 10.
-- [x] T4. `api/smoke.py`, plus the function, cron and route in `vercel.json`.
-  Verifies AC 4 and 8.
+- [x] T4. The endpoint, plus the cron and route in `vercel.json`. Verifies AC 4
+  and 8. Moved into `smoke_runner.endpoint`, dispatched from `api/index.py`, after
+  the first deploy showed the Python preset never builds `api/smoke.py`.
+- [x] T4b. `CRON_SECRET` set in Vercel (production), by the owner.
 - [x] T5. `tests/test_smoke.py`: capture, the auth gate, judging, the full run
   through the real webhook with fakes, and endpoint auth.
-- [ ] T6. `CRON_SECRET` created in Vercel (production). After merge and deploy,
-  run `/api/smoke?source=deploy` and record the result in this file. Verifies
+- [ ] T6. After merge and deploy, run `/api/smoke?source=deploy` and record the result in this file. Verifies
   AC 1-8 live.

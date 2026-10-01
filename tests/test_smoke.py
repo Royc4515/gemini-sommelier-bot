@@ -24,7 +24,6 @@ sys.modules["google.genai.types"] = _types_mod
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "api"))
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123:FAKE")
 os.environ["TELEGRAM_SECRET_TOKEN"] = "test-secret"
@@ -177,22 +176,33 @@ class RunTests(unittest.TestCase):
 
 
 class EndpointTests(unittest.TestCase):
-    def _call(self, auth=None, query=""):
+    """/api/smoke as Vercel delivers it: to the webhook's own app (one function)."""
+
+    def _call(self, auth=None, query="", path="/api/smoke", method="GET"):
         import importlib
-        import smoke as endpoint  # api/smoke.py (api/ is on sys.path)
-        importlib.reload(endpoint)
-        env = {"REQUEST_METHOD": "GET", "QUERY_STRING": query}
+        import api.index as idx
+        importlib.reload(idx)
+        env = {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": query}
         if auth is not None:
             env["HTTP_AUTHORIZATION"] = auth
         status = []
-        body = b"".join(endpoint.application(env, lambda s, h: status.append(s)))
+        body = b"".join(idx.application(env, lambda s, h: status.append(s)))
         return status[0], body
+
+    def test_smoke_path_is_recognised_however_it_arrives(self):
+        self.assertTrue(smoke_runner.is_smoke_request({"PATH_INFO": "/api/smoke/"}))
+        self.assertTrue(smoke_runner.is_smoke_request(
+            {"PATH_INFO": "/api/index.py", "RAW_URI": "/api/smoke?source=deploy"}))
+        self.assertFalse(smoke_runner.is_smoke_request({"PATH_INFO": "/api/webhook"}))
+        self.assertFalse(smoke_runner.is_smoke_request({}))  # the runner's own requests
 
     def test_fails_closed_without_secret(self):
         with patch.dict(os.environ, {"CRON_SECRET": ""}), \
-             patch("smoke_runner.run") as mock_run:
-            status, _ = self._call(auth="Bearer anything")
+             patch("smoke_runner.run") as mock_run, \
+             contextlib.redirect_stderr(io.StringIO()):
+            status, body = self._call(auth="Bearer anything")
         self.assertTrue(status.startswith("401"))
+        self.assertEqual(json.loads(body), {"error": "unauthorized"})
         mock_run.assert_not_called()
 
     def test_wrong_token_is_rejected(self):
@@ -202,16 +212,24 @@ class EndpointTests(unittest.TestCase):
         self.assertTrue(status.startswith("401"))
         mock_run.assert_not_called()
 
-    def test_right_token_runs_and_notifies(self):
+    def test_right_token_runs_against_the_webhook_and_notifies(self):
+        import api.index as idx
         report = {"ok": True, "source": "deploy"}
         with patch.dict(os.environ, {"CRON_SECRET": "s3"}), \
              patch("smoke_runner.run", return_value=report) as mock_run, \
              patch("smoke_runner.notify") as mock_notify:
             status, body = self._call(auth="Bearer s3", query="source=deploy")
         self.assertTrue(status.startswith("200"))
+        self.assertIs(mock_run.call_args.args[0], idx.application)
         self.assertEqual(mock_run.call_args.kwargs["source"], "deploy")
         mock_notify.assert_called_once_with(report)
         self.assertEqual(json.loads(body), report)
+
+    def test_webhook_path_is_untouched(self):
+        with patch("smoke_runner.endpoint") as mock_endpoint:
+            status, body = self._call(path="/api/webhook")
+        mock_endpoint.assert_not_called()
+        self.assertTrue(status.startswith("405"))  # the webhook's own GET answer
 
 
 if __name__ == "__main__":
