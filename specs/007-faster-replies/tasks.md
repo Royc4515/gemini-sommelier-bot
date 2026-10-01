@@ -32,8 +32,9 @@ Ordered, each independently testable. Check off as completed.
   chat → send the draft, action → act and drop the draft. — _verifies: AC 3, 10_
 - [x] T10. Tests: overlap, failure isolation, discard on action, order,
   typing stop, cache reset. — _verifies: AC 3-5, 7-10_
-- [ ] T11. Live after: same questions and taps; after table + AC 6 verdict in
-  spec.md. — _verifies: AC 6_
+- [x] T11. Live after: same questions and taps; after table + AC 6 verdict in
+  spec.md. — _verifies: AC 6_ (2026-10-01, by the spec 008 smoke run: AC 6
+  met, median 17.2 s; AC 11 partly met, see spec)
 
 ## Definition of done
 - [ ] All acceptance criteria met

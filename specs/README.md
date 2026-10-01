@@ -42,5 +42,5 @@ specs/
 | 004 | Smart photo (wine vs food) | approved | approved | approved | ✅ live-verified |
 | 005 | Remove a bottle (/delete) | approved | approved | approved | code done; redeploy + smoke pending |
 | 006 | Orchestrator (NL router) | approved | approved | approved | code done; live smoke pending |
-| 007 | Faster replies (cut serial round trips) | approved | approved | approved | phase 1 live + baseline measured; phase 2 code done; live after-measurement pending |
-| 008 | Automated live smoke test (/api/smoke + daily cron) | approved | approved | approved | code done; first live run pending |
+| 007 | Faster replies (cut serial round trips) | approved | approved | approved | ✅ live-measured 2026-10-01: median reply 17.2 s vs 54.3 s (AC 6 met); Apps Script read timeouts remain (AC 11 partial) |
+| 008 | Automated live smoke test (/api/smoke + daily cron) | approved | approved | approved | ✅ live 2026-10-01 (first run 5/8, failures are Apps Script timeouts); daily cron 06:00 UTC |
