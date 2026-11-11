@@ -18,6 +18,7 @@ _google_pkg = sys.modules.get("google") or types.ModuleType("google")
 _genai_mod = types.ModuleType("google.genai")
 _types_mod = types.ModuleType("google.genai.types")
 _types_mod.GenerateContentConfig = MagicMock()
+_types_mod.HttpOptions = MagicMock()
 _types_mod.Content = MagicMock()
 _types_mod.Part = MagicMock()
 _genai_mod.types = _types_mod

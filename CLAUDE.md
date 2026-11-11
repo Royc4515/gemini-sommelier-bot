@@ -4,7 +4,7 @@
 A single-user Hebrew Telegram bot that acts as Roy's personal sommelier: it pairs food with the bottles actually in his Google Sheets wine cellar and lets him add, edit, open/finish and delete bottles by chat, voice or label photo.
 
 ## Stack & layout
-Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt`). Raw WSGI app on Vercel serverless; no web framework, no pandas (`specs/constitution.md` §1).
+Python 3.12 (`.python-version`), stdlib + `google-genai` 3.x only (`requirements.txt`). Raw WSGI app on Vercel serverless; no web framework, no pandas (`specs/constitution.md` §1).
 - `api/index.py` - Vercel entrypoint (`app`), Telegram webhook, linear router: auth -> callbacks -> voice -> write flows -> bare photo -> commands -> orchestrator -> chat.
 - `sommelier_ai.py` - Gemini facade: fallback chain, retry/backoff, per-task call shapes. Prompts in `sommelier_prompts.py`, defensive parsers in `sommelier_parsing.py`.
 - `orchestrator.py` - free-text intent router (set_status / delete / add / edit / chat).
@@ -19,7 +19,7 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` only (`requirements.txt
 
 ## Commands
 - Install: `pip install -r requirements.txt` (verified, in a venv).
-- Unit tests: `python -m unittest discover -s tests` (verified: 268 tests OK, run on Python 3.11 locally; CI uses 3.12).
+- Unit tests: `python -m unittest discover -s tests` (verified 2026-11-11: 270 tests OK on google-genai 3.1.0, run on Python 3.11 locally; CI uses 3.12).
 - Smoke: `python selftest_overhaul.py` (verified: 21 passed). CI runs both on push/PR to `main` (`.github/workflows/tests.yml`).
 - Live Apps Script contract check: `SHEETS_MEMORY_URL=... SHEETS_SECRET=... python smoke_editwine.py [--write-test]` (unverified; hits the real sheet).
 - Register the `/` menu after changing commands: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified).
@@ -42,7 +42,10 @@ Failure behavior (`_call_with_retry`, `_is_transient`):
 - 500/503/504, "overloaded", timeouts: retry the SAME model up to 3 attempts, sleeping 1s then 2s.
 - 429 / quota, 404 / not found, 400 and anything else: skip straight to the next model, no retry. The SDK's integer `.code` wins over message text.
 - All models fail: raise `RuntimeError("All fallback models exhausted...")`. Callers must catch it: `chat_flow.answer_chat` sends a Hebrew error reply; `parse_request` degrades to a `chat` intent. Never let it crash the webhook (constitution §4, §5).
+- Timeouts are retried by exception class name (`*Timeout*` / `TimeoutError`) as well as message text, because the SDK's transport is `httpx2` since google-genai 3.0 and a timeout can stringify to "".
 - Voice (`transcribe_audio`) and photos (`analyze_wine_photo`) filter out `gemma*`; `_generate_json` drops JSON mode for `gemma*`.
+- The client pins `api_version="v1beta"` (`SommelierAI._API_VERSION`). google-genai 3.0 defaults to `v1`; moving off `v1beta` needs a live check of every chain model, Gemma, JSON mode and `system_instruction` first, since an unsupported field on `v1` is a 400 that skips the model silently.
+- Codes last checked against Google's published model list on 2026-11-11 (docs only, no live call): all four are current. `gemini-3.6-flash` and `gemini-4-argon` also exist; neither is in the chain (3.8 Flash supersedes 3.6; Argon has no free tier).
 Changing the order, codes, retry counts or error classification requires a test in `tests/test_sommelier_ai.py` or a manual verification note in the PR (which model codes were live-checked and how). A wrong model code 404s and silently burns a hop; `test_fallback_models_are_current_api_codes` pins the primary.
 
 ## Gotchas
