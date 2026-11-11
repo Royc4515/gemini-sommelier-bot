@@ -18,4 +18,6 @@
 - [x] Suite green + new logic covered with fakes (150 tests pass)
 - [ ] **Apps Script redeployed** (owner, in editor) + `/delete` menu registered  ← **pending: you**
 - [ ] Live smoke: throwaway wine deleted, neighbors intact, /cancel safe  ← **pending: you**
+  - Not coverable by the automated smoke (spec 008): it never writes the cellar
+    and its only flow case is `/status` + `/cancel`. Stays a manual check.
 - [x] Spec/plan updated if reality diverged (none did)

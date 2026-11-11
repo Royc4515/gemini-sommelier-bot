@@ -60,5 +60,5 @@ Changing the order, codes, retry counts or error classification requires a test 
 - Every invocation is a cold start; flow state lives in the Apps Script KV store keyed by chat_id, never in module globals.
 - `tests/test_addwine.py` imports `_parse_wine_json` from `sommelier_ai`; keep that re-export.
 - `build_plan` is the original prompt and is stale (gemini-2.5-flash, `api/webhook.py`, BaseHTTPRequestHandler). Trust the code and `specs/`.
-- `specs/README.md`: 005 (/delete) and 006 (orchestrator) are marked "live smoke pending".
+- `specs/README.md`: 005 (/delete) and most of 006 (orchestrator action phrases, voice) still need a MANUAL live check; the automated smoke cannot cover them (no cellar writes, no action phrases). 009 runs on the legacy read path until `apps_script.js` is redeployed: a TIMING line with `as:get:bundle` plus per-item `as:get:*` reads means the live script has no `bundle` action.
 - The cellar spreadsheet ID is hardcoded as a default in `cellar.py` and `apps_script.js`; override via `CELLAR_FILE_ID`.

@@ -20,4 +20,8 @@
 - [x] Suite green + new logic covered with fakes (163 tests pass)
 - [ ] Live smoke: action phrases offer & start flows; questions answer normally;
   "רק שאלה" answers; voice action phrase offers  ← **pending: your bot**
+  - Partly covered 2026-11-11 (production `8d0bdd4`, automated smoke 8/8): all
+    five questions went through `parse_request` live and were answered as chat
+    ("questions answer normally"). The smoke sends no action phrase, no
+    "רק שאלה" and no voice, so those three stay a manual check.
 - [x] Spec/plan updated if reality diverged (none did)
