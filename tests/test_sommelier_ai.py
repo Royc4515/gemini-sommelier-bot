@@ -20,6 +20,7 @@ _google_pkg = sys.modules.get("google") or types.ModuleType("google")
 _genai_mod = types.ModuleType("google.genai")
 _types_mod = types.ModuleType("google.genai.types")
 _types_mod.GenerateContentConfig = MagicMock()
+_types_mod.HttpOptions = MagicMock()
 _types_mod.Content = MagicMock()
 _types_mod.Part = MagicMock()
 _genai_mod.types = _types_mod
@@ -224,6 +225,29 @@ class TestSommelierAI(unittest.TestCase):
                 self.ai.ask("test", "test")
 
         self.assertEqual(self.mock_client.chats.create.call_count, len(SommelierAI.FALLBACK_MODELS))
+
+    def test_timeout_with_empty_message_is_retried(self):
+        # httpx/httpx2 timeouts can stringify to ""; the class name still says
+        # it's transient.
+        class ReadTimeout(Exception):
+            pass
+
+        self.assertTrue(SommelierAI._is_transient(ReadTimeout("")))
+        self.assertTrue(SommelierAI._is_transient(TimeoutError()))
+        self.assertFalse(SommelierAI._is_transient(ValueError("")))
+
+    # ---- client setup -----------------------------------------------------
+
+    def test_client_pins_v1beta_api_version(self):
+        # google-genai 3.0 defaults to v1; the chain is only proven on v1beta.
+        # Patch through the module: under `discover`, sommelier_ai may be bound
+        # to another test file's SDK stub.
+        with patch("sommelier_ai.types") as mtypes, patch("sommelier_ai.genai") as mgenai:
+            SommelierAI()
+        mtypes.HttpOptions.assert_called_once_with(api_version="v1beta")
+        kwargs = mgenai.Client.call_args.kwargs
+        self.assertIs(kwargs["http_options"], mtypes.HttpOptions.return_value)
+        self.assertEqual(kwargs["api_key"], "fake-gemini-key")
 
     # ---- model chain + prompt context -------------------------------------
 

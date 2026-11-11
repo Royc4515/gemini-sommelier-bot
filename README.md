@@ -35,7 +35,7 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 
 - **Remove a bottle (`/delete`)**: Pick a bottle (button, number, or name filter), see its identity, and confirm a permanent removal on a second step. Deletes that exact row with the same shifted-row identity guard; the confirm is single-use so a stray tap can't delete.
 - **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
-- **Resilient AI Pipeline**: Integrates the `google-genai` SDK (2.x) with an automatic fallback chain (`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemma-4-31b-it` → `gemini-3.8-flash`). Transient server errors (500/503/504) are retried with exponential backoff; any model that still fails (quota, retired, overloaded) hands off to the next one. Voice and photos skip the text-only Gemma hop.
+- **Resilient AI Pipeline**: Integrates the `google-genai` SDK (3.x, pinned to the `v1beta` endpoint) with an automatic fallback chain (`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemma-4-31b-it` → `gemini-3.8-flash`). Transient server errors (500/503/504) are retried with exponential backoff; any model that still fails (quota, retired, overloaded) hands off to the next one. Voice and photos skip the text-only Gemma hop.
 - **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via `BASE_SYSTEM_INSTRUCTION` in `sommelier_prompts.py`.
 
 ---

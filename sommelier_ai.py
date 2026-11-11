@@ -63,6 +63,7 @@ class SommelierAI:
         "gemma-4-31b-it",
         "gemini-3.8-flash",
     )
+    _API_VERSION = "v1beta"
     _MAX_RETRIES = 3
     # Server-side hiccups worth retrying on the SAME model before moving on
     # (the API's documented retryable codes: 500, 503, 504), plus network
@@ -81,7 +82,14 @@ class SommelierAI:
 
     def __init__(self):
         api_key: str = os.environ["GEMINI_API_KEY"]
-        self.client = genai.Client(api_key=api_key)
+        # don't touch / google-genai 3.0 switched the default endpoint from v1beta
+        # to v1. Every model in the chain, Gemma, JSON mode and system_instruction
+        # were proven live on v1beta only; an unsupported field on v1 is a 400,
+        # which skips the model without retry and can silently drain the chain.
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version=self._API_VERSION),
+        )
 
     @staticmethod
     def _today_line() -> str:
@@ -373,6 +381,11 @@ class SommelierAI:
         code = getattr(exc, "code", None)
         if isinstance(code, int):
             return code in cls._RETRY_CODES
+        # Matched by class name, not isinstance: the SDK's transport moved from
+        # httpx to httpx2 in google-genai 3.0, and a timeout can carry an empty
+        # message, which the text match below would treat as permanent.
+        if isinstance(exc, TimeoutError) or "Timeout" in type(exc).__name__:
+            return True
         err = str(exc).lower()
         if any(s in err for s in cls._SKIP_STATUSES):
             return False
