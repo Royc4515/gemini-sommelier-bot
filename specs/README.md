@@ -40,8 +40,8 @@ specs/
 | 002 | Photo → wine info | approved | approved | approved | ✅ live-verified |
 | 003 | Open / Finish a bottle | approved | approved | approved | ✅ live-verified |
 | 004 | Smart photo (wine vs food) | approved | approved | approved | ✅ live-verified |
-| 005 | Remove a bottle (/delete) | approved | approved | approved | code done; redeploy + smoke pending |
-| 006 | Orchestrator (NL router) | approved | approved | approved | code done; live smoke pending |
+| 005 | Remove a bottle (/delete) | approved | approved | approved | code done; redeploy + manual live check pending (the automated smoke never writes the cellar, so it cannot cover a delete) |
+| 006 | Orchestrator (NL router) | approved | approved | approved | partly live-verified 2026-11-11: questions route to chat and answer (smoke 8/8); action phrases, "רק שאלה" and voice still need a manual check |
 | 007 | Faster replies (cut serial round trips) | approved | approved | approved | ✅ live-measured 2026-10-01: median reply 17.2 s vs 54.3 s (AC 6 met); Apps Script read timeouts remain (AC 11 partial) |
 | 008 | Automated live smoke test (/api/smoke + daily cron) | approved | approved | approved | ✅ live 2026-10-01 (first run 5/8, failures are Apps Script timeouts); amended: runs only after a change |
-| 009 | One Apps Script read per message | approved | approved | approved | code merged (#24); live smoke pending |
+| 009 | One Apps Script read per message | approved | approved | approved | code merged (#24); legacy path live-verified 2026-11-11 (smoke 8/8, median 5.0 s, no failed read); `apps_script.js` redeploy + 3 runs for AC 7 pending (owner) |

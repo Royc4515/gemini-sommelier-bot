@@ -44,3 +44,9 @@ Ordered, each independently testable.
 - [ ] T9. Live: merge, deploy, and one smoke run against the old script (legacy
   path). Then the owner pastes and redeploys `apps_script.js`, and 3 smoke runs
   give the AC 7 verdict, recorded here.
+  - First half done 2026-11-11 (production `8d0bdd4`, google-genai 3.1): one
+    smoke run against the old script, 8/8 passed, median reply 5.0 s, memory
+    read, no failed or retried read. Every TIMING line shows `as:get:bundle`
+    followed by the per-item reads, i.e. the legacy fallback: the live script
+    has no `bundle` action yet, so each message currently makes one extra call.
+  - Still pending (owner): paste and redeploy `apps_script.js`, then 3 runs.
