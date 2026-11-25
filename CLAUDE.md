@@ -13,16 +13,17 @@ Python 3.12 (`.python-version`), stdlib + `google-genai` 3.x only (`requirements
 - `request_reads.py` - request-scoped snapshot (spec 009): each update makes ONE Apps Script read (`action=bundle`: flow states, memory, cellar list) via `cellar.prefetch_reads`; `get_state` / `list_wines` / `ChatMemory._fetch_document` wait on it instead of calling Apps Script. Retried once; on final failure everything degrades (no flow, memory unavailable, []), never per-reader re-reads. An old script (no `bundle` marker) falls back to the per-item reads.
 - `smoke_runner.py` - automated live smoke test (spec 008), served at `/api/smoke` by the same app (`api/index.py` dispatches by path): runs 8 fixed cases through the real webhook in-process as chat `smoke`, Telegram captured by `dry_run.py`, verdict sent to the owner. Fixture in `smoke_fixtures/`.
 - `wine_inventory.py` - read path via public CSV export. `chat_memory.py` - 2-layer memory (30 active messages + summary).
+- `bot_profile.py` - author credit and the Telegram profile texts (description / short description, he + en), pushed on `/start` and by `set_commands.py`. The credit appears ONLY in `/start`, `/help`, `/about` and the profile, never in sommelier answers (`tests/test_bot_profile.py` pins it).
 - `apps_script.js` - Google Apps Script Web App that performs every sheet write and holds flow state. Deployed by hand, not by Vercel.
 - `specs/` - spec-driven workflow: `constitution.md`, one folder per feature (spec/plan/tasks).
 - `tests/` - unittest suite with full API mocking. `selftest_overhaul.py` - no-network architecture smoke check.
 
 ## Commands
 - Install: `pip install -r requirements.txt` (verified, in a venv).
-- Unit tests: `python -m unittest discover -s tests` (verified 2026-11-11: 270 tests OK on google-genai 3.1.0, run on Python 3.11 locally; CI uses 3.12).
+- Unit tests: `python -m unittest discover -s tests` (verified 2026-11-25: 293 tests OK on google-genai 3.6.1, run on Python 3.13 locally; CI uses 3.12).
 - Smoke: `python selftest_overhaul.py` (verified: 21 passed). CI runs both on push/PR to `main` (`.github/workflows/tests.yml`).
 - Live Apps Script contract check: `SHEETS_MEMORY_URL=... SHEETS_SECRET=... python smoke_editwine.py [--write-test]` (unverified; hits the real sheet).
-- Register the `/` menu after changing commands: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified).
+- Register the `/` menu and profile texts after changing them: `TELEGRAM_BOT_TOKEN=... python set_commands.py` (unverified), or just send `/start`, which pushes both.
 - Deploy: Vercel from the repo (`vercel.json`, routes `/api/webhook` and `/api/smoke` -> `api/index.py`, `maxDuration` 300, the Hobby + Fluid max, needed by the smoke run). No build step. The project uses Vercel's `python` preset: the one `app` in `api/index.py` serves every path, so a second file under `api/` never becomes its own function. Add endpoints by dispatching inside `application`.
 - Live smoke: `curl -H "Authorization: Bearer $CRON_SECRET" https://<prod>/api/smoke?source=deploy` (runs real Gemini/Apps Script, about 11 model calls; never writes the cellar). Runs only after a change (owner's rule): run `?source=deploy` yourself after every production deploy and after any `apps_script.js` redeploy. A daily Vercel Cron check (`0 6 * * *` UTC) runs it only if the live `VERCEL_DEPLOYMENT_ID` has no finished run on record (KV key `smoke:tested_deployment`), so a day with no change sends nothing.
 - Env vars: see README "Environment Variables". Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET_TOKEN`, `GEMINI_API_KEY`, `WINE_CSV_URL`; `CRON_SECRET` for `/api/smoke` (fails closed without it).
