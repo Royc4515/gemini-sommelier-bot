@@ -4,12 +4,15 @@
 [![Gemini API](https://img.shields.io/badge/Gemini_API-Enabled-orange?logo=google)](https://ai.google.dev/)
 [![Telegram Bot](https://img.shields.io/badge/Telegram_Bot-Active-blue?logo=telegram)](https://core.telegram.org/bots)
 [![Vercel](https://img.shields.io/badge/Vercel-Serverless-black?logo=vercel)](https://vercel.com)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue?logo=linkedin)](https://www.linkedin.com/in/roy-carmelli/)
+[![Portfolio](https://img.shields.io/badge/Portfolio-Roy_Carmelli-8B0000?logo=vercel&logoColor=white)](https://roy-carmelli-portfolio.vercel.app/)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue?logo=linkedin)](https://www.linkedin.com/in/roy-carmelli)
 [![GitHub](https://img.shields.io/badge/GitHub-Follow-lightgray?logo=github)](https://github.com/Royc4515)
 
 **Gemini Sommelier Bot** is a serverless Telegram bot powered by the Google Gemini API. It operates as a highly specialized, context-aware sommelier that pairs meal selections with your live wine inventory managed via Google Sheets.
 
 Designed for robust execution, it utilizes a Vercel-deployed serverless architecture, exponential backoff for API resiliency, and a dynamic LLM fallback chain.
+
+**Built by Roy Carmelli** · [Portfolio](https://roy-carmelli-portfolio.vercel.app/) · [LinkedIn](https://www.linkedin.com/in/roy-carmelli) · [GitHub](https://github.com/Royc4515)
 
 ---
 
@@ -34,7 +37,8 @@ Designed for robust execution, it utilizes a Vercel-deployed serverless architec
 - **Open / Finish a bottle (`/status`)**: Pick a bottle (button, number, or name filter) and mark it Open, Finished, or Closed. Writes only the status column (A-N and O/P/Q untouched), with the same shifted-row identity guard as `/editwine`.
 
 - **Remove a bottle (`/delete`)**: Pick a bottle (button, number, or name filter), see its identity, and confirm a permanent removal on a second step. Deletes that exact row with the same shifted-row identity guard; the confirm is single-use so a stray tap can't delete.
-- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works.
+- **Native UX polish**: A `/` command menu (`setMyCommands`) for discoverability and live "typing…" indicators (`sendChatAction`) while the bot works. `/help` lists every command and `/about` shows who built the bot; both answer without touching memory or the model.
+- **Bot profile**: The Telegram description ("What can this bot do?") and short description are set in code (`bot_profile.py`), in Hebrew with an English version, and pushed on every `/start` (or by `set_commands.py`). No BotFather step needed.
 - **Resilient AI Pipeline**: Integrates the `google-genai` SDK (3.x, pinned to the `v1beta` endpoint) with an automatic fallback chain (`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemma-4-31b-it` → `gemini-3.8-flash`). Transient server errors (500/503/504) are retried with exponential backoff; any model that still fails (quota, retired, overloaded) hands off to the next one. Voice and photos skip the text-only Gemma hop.
 - **Modular Persona Configuration**: The sommelier's language, dietary constraints, and domain expertise are strictly configurable via `BASE_SYSTEM_INSTRUCTION` in `sommelier_prompts.py`.
 
@@ -150,7 +154,9 @@ Simply edit `BASE_SYSTEM_INSTRUCTION` inside `sommelier_prompts.py` to shape you
 
 Building your own virtual Sommelier can be tricky! If you need any help connecting to Google Sheets, configuring the Vercel deployment, or tweaking the Gemini persona, I'm here to help.
 
-You can open an issue here on **[GitHub](https://github.com/Royc4515)** or connect with me on **[LinkedIn](https://www.linkedin.com/in/roy-carmelli/)**.
+You can open an issue here on **[GitHub](https://github.com/Royc4515)**, connect with me on **[LinkedIn](https://www.linkedin.com/in/roy-carmelli)**, or see more of my work on my **[portfolio](https://roy-carmelli-portfolio.vercel.app/)**.
+
+Built by **Roy Carmelli**.
 
 ---
 

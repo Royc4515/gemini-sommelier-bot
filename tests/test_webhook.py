@@ -291,10 +291,51 @@ class TestWebhookStartRegistersMenu(unittest.TestCase):
         env = _make_environ(body={"message": {"text": "/start", "chat": {"id": 999}}})
         with patch("telegram_client.TelegramClient.send_message"), \
              patch("telegram_client.TelegramClient.set_my_commands") as mock_set, \
+             patch("telegram_client.TelegramClient.set_my_description"), \
+             patch("telegram_client.TelegramClient.set_my_short_description"), \
              patch("chat_memory.ChatMemory.clear"):
             status, _ = _call_app(env)
         self.assertEqual(status, "200 OK")
         mock_set.assert_called_once()
+
+    def test_start_registers_profile_texts_in_both_languages(self):
+        env = _make_environ(body={"message": {"text": "/start", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message"), \
+             patch("telegram_client.TelegramClient.set_my_commands"), \
+             patch("telegram_client.TelegramClient.set_my_description") as mock_desc, \
+             patch("telegram_client.TelegramClient.set_my_short_description") as mock_short, \
+             patch("chat_memory.ChatMemory.clear"):
+            _call_app(env)
+        for mock in (mock_desc, mock_short):
+            langs = {c.kwargs.get("language_code") for c in mock.call_args_list}
+            self.assertEqual(langs, {None, "en"})
+
+    def test_start_profile_failure_still_sends_welcome(self):
+        env = _make_environ(body={"message": {"text": "/start", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("telegram_client.TelegramClient.set_my_commands"), \
+             patch("telegram_client.TelegramClient.set_my_description",
+                   side_effect=Exception("net")), \
+             patch("telegram_client.TelegramClient.set_my_short_description",
+                   side_effect=Exception("net")), \
+             patch("chat_memory.ChatMemory.clear"):
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_send.assert_called_once()
+
+    def test_start_welcome_carries_the_credit_line(self):
+        from bot_profile import CREDIT_LINE
+        env = _make_environ(body={"message": {"text": "/start", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("telegram_client.TelegramClient.set_my_commands"), \
+             patch("telegram_client.TelegramClient.set_my_description"), \
+             patch("telegram_client.TelegramClient.set_my_short_description"), \
+             patch("chat_memory.ChatMemory.clear"):
+            _call_app(env)
+        text = mock_send.call_args.kwargs["text"]
+        self.assertIn("שלום!", text)
+        self.assertTrue(text.endswith(CREDIT_LINE))
+        self.assertIn("/help", text)
 
     def test_reset_does_not_register_menu(self):
         env = _make_environ(body={"message": {"text": "/reset", "chat": {"id": 999}}})
@@ -303,6 +344,70 @@ class TestWebhookStartRegistersMenu(unittest.TestCase):
              patch("chat_memory.ChatMemory.clear"):
             _call_app(env)
         mock_set.assert_not_called()
+
+
+class TestWebhookInfoCommands(unittest.TestCase):
+    """/about and /help: answered by the command layer, never by the router.
+
+    They must not reach the orchestrator (a new command mistaken for a cellar
+    action), must not call the model, and, unlike /start, keep the memory.
+    """
+
+    def _run(self, text: str):
+        env = _make_environ(body={"message": {"text": text, "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("telegram_client.TelegramClient.set_my_commands") as mock_cmds, \
+             patch("cellar.CellarBackend.get_state", return_value=None), \
+             patch("chat_memory.ChatMemory.clear") as mock_clear, \
+             patch("chat_memory.ChatMemory.save_turn") as mock_save, \
+             patch("sommelier_ai.SommelierAI.parse_request") as mock_parse, \
+             patch("sommelier_ai.SommelierAI.ask") as mock_ask:
+            status, _ = _call_app(env)
+        self.assertEqual(status, "200 OK")
+        mock_parse.assert_not_called()
+        mock_ask.assert_not_called()
+        mock_clear.assert_not_called()
+        mock_save.assert_not_called()
+        mock_cmds.assert_not_called()
+        mock_send.assert_called_once()
+        return mock_send.call_args.kwargs["text"]
+
+    def test_about_sends_the_author_credit(self):
+        from bot_profile import ABOUT_TEXT, AUTHOR_LINKS
+        text = self._run("/about")
+        self.assertEqual(text, ABOUT_TEXT)
+        self.assertIn("Roy Carmelli", text)
+        self.assertIn("רועי כרמלי", text)
+        for url in AUTHOR_LINKS:
+            self.assertIn(url, text)
+
+    def test_about_is_case_insensitive(self):
+        from bot_profile import ABOUT_TEXT
+        self.assertEqual(self._run("  /About "), ABOUT_TEXT)
+
+    def test_help_lists_every_command_and_the_credit(self):
+        from bot_profile import CREDIT_LINE
+        from set_commands import BOT_COMMANDS
+        text = self._run("/help")
+        for cmd in BOT_COMMANDS:
+            self.assertIn(f"/{cmd['command']}", text)
+        self.assertTrue(text.endswith(CREDIT_LINE))
+
+    def test_regular_chat_reply_carries_no_credit(self):
+        from bot_profile import AUTHOR_LINKS, AUTHOR_NAME_EN, AUTHOR_NAME_HE
+        env = _make_environ(body={"message": {"text": "מה לשתות עם סטייק?", "chat": {"id": 999}}})
+        with patch("telegram_client.TelegramClient.send_message") as mock_send, \
+             patch("telegram_client.TelegramClient.send_chat_action"), \
+             patch("cellar.CellarBackend.list_wines", return_value=[]), \
+             patch("sommelier_ai.SommelierAI.parse_request",
+                   return_value={"intent": "chat", "wine_row": 0, "status": "", "details": ""}), \
+             patch("wine_inventory.WineInventory.get_formatted_inventory", return_value="inv"), \
+             patch("sommelier_ai.SommelierAI.ask", return_value="קברנה סוביניון"):
+            _call_app(env)
+        sent = " ".join(c.kwargs.get("text", "") for c in mock_send.call_args_list)
+        self.assertIn("קברנה סוביניון", sent)
+        for marker in (AUTHOR_NAME_EN, AUTHOR_NAME_HE, "/about", *AUTHOR_LINKS):
+            self.assertNotIn(marker, sent)
 
 
 class TestWebhookErrorHandling(unittest.TestCase):

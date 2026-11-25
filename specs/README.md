@@ -45,3 +45,4 @@ specs/
 | 007 | Faster replies (cut serial round trips) | approved | approved | approved | ✅ live-measured 2026-10-01: median reply 17.2 s vs 54.3 s (AC 6 met); Apps Script read timeouts remain (AC 11 partial) |
 | 008 | Automated live smoke test (/api/smoke + daily cron) | approved | approved | approved | ✅ live 2026-10-01 (first run 5/8, failures are Apps Script timeouts); amended: runs only after a change |
 | 009 | One Apps Script read per message | approved | approved | approved | code merged (#24); legacy path live-verified 2026-11-11 (smoke 8/8, median 5.0 s, no failed read); `apps_script.js` redeploy + 3 runs for AC 7 pending (owner) |
+| 010 | Author credit (/about, /help, bot profile) | approved | folded into spec | folded into spec | code done; `/start` after deploy pushes the profile (owner) |

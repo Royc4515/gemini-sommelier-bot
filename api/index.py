@@ -30,6 +30,7 @@ from cellar import (  # noqa: E402
 )
 from chat_flow import ChatDraft            # noqa: E402
 from set_commands import BOT_COMMANDS     # noqa: E402
+from bot_profile import ABOUT_TEXT, CREDIT_LINE, register_bot_profile  # noqa: E402
 from chat_memory import ChatMemory        # noqa: E402
 from sommelier_ai import SommelierAI      # noqa: E402
 from telegram_client import TelegramClient  # noqa: E402
@@ -174,8 +175,29 @@ def _handle_bare_photo(message: dict, chat_id) -> tuple[str, str] | None:
     return _OK
 
 
+# What the bot does, shared by /start and /help so the two can't drift.
+_CAPABILITIES = (
+    "אפשר לשאול אותי על:\n"
+    "• המלצות יין למאכל\n"
+    "• ניתוח המלאי שלך\n"
+    "• טרמינולוגיה וחינוך יין\n"
+    "• פערים במרתף ורכישות מומלצות"
+)
+
+# Commands this layer answers without touching memory or the model. Handled
+# before the orchestrator, so the router never reads them as a cellar action.
+_INFO_COMMANDS = ("/help", "/about")
+
+
+def _help_text() -> str:
+    """/help: capabilities, the '/' menu (from its single source) and the credit."""
+    commands = "\n".join(f"/{c['command']} - {c['description']}" for c in BOT_COMMANDS)
+    return f"{_CAPABILITIES}\n\nפקודות:\n{commands}\n\n{CREDIT_LINE}"
+
+
 def _handle_command(text: str, chat_id) -> tuple[str, str] | None:
-    """Handle the bot commands this layer owns (/reset, /start, stray /cancel).
+    """Handle the bot commands this layer owns (/reset, /start, /help, /about,
+    stray /cancel).
 
     Returns a terminal response for those; returns None for anything else
     (including other '/' commands, which the flows above already consumed).
@@ -200,6 +222,14 @@ def _handle_command(text: str, chat_id) -> tuple[str, str] | None:
         except Exception:
             pass
         return _OK
+    if command in _INFO_COMMANDS:
+        # Read-only: unlike /start these keep the conversation memory.
+        reply = ABOUT_TEXT if command == "/about" else _help_text()
+        try:
+            TelegramClient().send_message(chat_id=chat_id, text=reply)
+        except Exception:
+            pass
+        return _OK
     if command not in ("/reset", "/start"):
         return None
 
@@ -214,21 +244,20 @@ def _handle_command(text: str, chat_id) -> tuple[str, str] | None:
             "אני לא זוכר שיחות קודמות מעכשיו 🍷"
         )
     else:  # /start
-        # Self-register the '/' command menu so the user never has to run
-        # set_commands.py. /start is rare, so this is not a per-request cost
-        # (constitution §2).
+        # Self-register the '/' command menu and the profile texts so the user
+        # never has to run set_commands.py. /start is rare, so this is not a
+        # per-request cost (constitution §2).
+        client = TelegramClient()
         try:
-            TelegramClient().set_my_commands(BOT_COMMANDS)
+            client.set_my_commands(BOT_COMMANDS)
         except Exception:
             pass
+        register_bot_profile(client)
         reply = (
             "שלום! אני הסומלייה האישי שלך 🍷\n\n"
-            "אפשר לשאול אותי על:\n"
-            "• המלצות יין למאכל\n"
-            "• ניתוח המלאי שלך\n"
-            "• טרמינולוגיה וחינוך יין\n"
-            "• פערים במרתף ורכישות מומלצות\n\n"
-            "שלח /reset כדי לנקות את הזיכרון."
+            f"{_CAPABILITIES}\n\n"
+            "שלח /reset כדי לנקות את הזיכרון, /help לכל הפקודות.\n\n"
+            f"{CREDIT_LINE}"
         )
     try:
         TelegramClient().send_message(chat_id=chat_id, text=reply)
@@ -386,7 +415,7 @@ def _route_message(pool, message: dict, chat_id, _respond):
         timing.set_route("ignored")
         return _respond("200 OK", "OK — non-text ignored")
 
-    # ---- Handle bot commands (/reset, /start) ----
+    # ---- Handle bot commands (/reset, /start, /help, /about) ----
     command_result = _handle_command(text, chat_id)
     if command_result:
         timing.set_route("command")

@@ -251,11 +251,31 @@ class TelegramClient:
     def set_my_commands(self, commands: list[dict]) -> dict:
         """Register the bot's '/' command menu. *commands* is a list of
         {"command","description"} dicts. Run once (not per request)."""
+        return self._set_bot_setting("setMyCommands", {"commands": commands})
+
+    def set_my_description(self, description: str, language_code: str | None = None) -> dict:
+        """Set the "What can this bot do?" text (empty-chat card, max 512).
+        *language_code* None sets the default for every language."""
+        return self._set_bot_setting(
+            "setMyDescription", {"description": description}, language_code)
+
+    def set_my_short_description(self, short_description: str,
+                                 language_code: str | None = None) -> dict:
+        """Set the profile / share-preview text (max 120)."""
+        return self._set_bot_setting(
+            "setMyShortDescription", {"short_description": short_description},
+            language_code)
+
+    def _set_bot_setting(self, method: str, data: dict,
+                         language_code: str | None = None) -> dict:
+        """POST one bot-profile setting (commands, descriptions). Never sent
+        during a smoke run: the synthetic chat must not rewrite the real bot."""
         if dry_run.current() is not None:
             return {}
-        data = {"commands": commands}
+        if language_code:
+            data = {**data, "language_code": language_code}
         req = urllib.request.Request(
-            url=f"{self.api_url}/setMyCommands",
+            url=f"{self.api_url}/{method}",
             data=json.dumps(data).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",

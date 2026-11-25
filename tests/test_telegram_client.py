@@ -257,6 +257,38 @@ class TestVoiceAndMenu(unittest.TestCase):
         self.assertTrue(captured["url"].endswith("/setMyCommands"))
         self.assertEqual(captured["body"]["commands"][0]["command"], "addwine")
 
+    def _capture_post(self, call):
+        captured = {}
+
+        def fake_urlopen(req, **kwargs):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            captured["timeout"] = kwargs.get("timeout")
+            return _make_http_response({"ok": True, "result": True})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            call()
+        return captured
+
+    def test_set_my_description_default_language_omits_language_code(self):
+        captured = self._capture_post(lambda: self.client.set_my_description("שלום"))
+        self.assertTrue(captured["url"].endswith("/setMyDescription"))
+        self.assertEqual(captured["body"], {"description": "שלום"})
+        self.assertIsNotNone(captured["timeout"])
+
+    def test_set_my_short_description_with_language(self):
+        captured = self._capture_post(
+            lambda: self.client.set_my_short_description("hi", language_code="en"))
+        self.assertTrue(captured["url"].endswith("/setMyShortDescription"))
+        self.assertEqual(captured["body"], {"short_description": "hi", "language_code": "en"})
+
+    def test_profile_setters_are_skipped_during_a_smoke_run(self):
+        with patch("dry_run.current", return_value=object()), \
+             patch("urllib.request.urlopen") as mock_open:
+            self.assertEqual(self.client.set_my_description("x"), {})
+            self.assertEqual(self.client.set_my_short_description("x"), {})
+        mock_open.assert_not_called()
+
     def test_every_api_call_has_a_timeout(self):
         timeouts = []
 
